@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.colors as mcolors # Helper for color gradients if needed
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="NBA Pro Analytics Simulator for BW SPM244", layout="wide", page_icon="🏀")
@@ -46,56 +47,94 @@ def simulate_player_performance(row, opp_stats, pace_factor):
     def_col = get_position_category(row['Position'])
     matchup_multiplier = opp_stats.get(def_col, 1.0)
     
+    # Noise Factors
     noise = np.random.uniform(0.90, 1.10)
     def_noise = np.random.uniform(0.80, 1.20)
-    system_efficiency = 0.95
+    system_efficiency = 0.95 # General friction
     
     base_mult = usage_rate * pace_factor * matchup_multiplier * noise * system_efficiency
     
     stats = {
         "Player": row['Player'],
-        "PTS": int(round(row['Avg_Pts'] * base_mult)),
-        "REB": int(round(row['Avg_Reb'] * base_mult)),
-        "AST": int(round(row['Avg_Ast'] * base_mult)),
-        "STL": int(round(row['Avg_Stl'] * base_mult * def_noise)),
-        "BLK": int(round(row['Avg_Blk'] * base_mult * def_noise)),
-        "TOV": int(round(row['Avg_Tov'] * base_mult)),
-        "Exp Minutes": row['Exp Minutes']
+        "PTS": row['Avg_Pts'] * base_mult, # Keep as float for now
+        "REB": row['Avg_Reb'] * base_mult,
+        "AST": row['Avg_Ast'] * base_mult,
+        "STL": row['Avg_Stl'] * base_mult * def_noise,
+        "BLK": row['Avg_Blk'] * base_mult * def_noise,
+        "TOV": row['Avg_Tov'] * base_mult,
+        "Exp Minutes": row['Exp Minutes'],
+        "Avg_Pts": row['Avg_Pts'] # Needed for Hero Ball detection
     }
     return stats
 
 def normalize_stats(df):
+    """
+    Smart Normalization:
+    1. Scale to regulation minutes (240).
+    2. Apply Fatigue Penalty if roster is thin.
+    3. Apply 'Hero Ball' Bonus to stars if roster is thin.
+    """
     if df.empty: return df
+    
     total_mins = df['Exp Minutes'].sum()
+    
+    # CASE 1: OVER-ALLOCATION (>242 mins)
     if total_mins > 242:
         scale_factor = 240.0 / total_mins
+        st.toast(f"⚠️ Minutes High ({int(total_mins)}). Scaled down.")
+        
         cols = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV']
         for c in cols:
-            df[c] = (df[c] * scale_factor).round().astype(int)
-        st.toast(f"⚠️ Minutes High ({int(total_mins)}). Scaled to regulation.")
+            df[c] = (df[c] * scale_factor)
+
+    # CASE 2: UNDER-ALLOCATION (<238 mins) -> The "OKC Fix"
+    elif total_mins < 238:
+        scale_factor = 240.0 / total_mins
+        
+        # Logic: If scale > 1.25 (roster is very thin), apply penalties/bonuses
+        is_thin_roster = scale_factor > 1.25
+        fatigue_penalty = 0.92 if is_thin_roster else 1.0
+        
+        if is_thin_roster:
+            st.toast(f"⚠️ Roster Thin ({int(total_mins)} mins). Scaling Up + Hero Ball Active!")
+        else:
+            st.toast(f"⚠️ Minutes Low ({int(total_mins)}). Auto-filled minutes.")
+
+        # Apply Base Scaling + Fatigue
+        cols = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV']
+        for c in cols:
+            df[c] = df[c] * scale_factor * fatigue_penalty
+            
+        # HERO BALL LOGIC 🦸‍♂️
+        if is_thin_roster:
+            # Find Stars: Players who average > 20 PPG
+            # We give them a usage boost (taking shots from the G-Leaguers)
+            star_mask = df['Avg_Pts'] >= 20
+            
+            # Boost their Points by 10% (Volume scoring)
+            # Increase their Turnovers by 10% (Forced passes)
+            df.loc[star_mask, 'PTS'] *= 1.10
+            df.loc[star_mask, 'TOV'] *= 1.10
+            
+            # Reduce others slightly to balance (optional, but realistic)
+            df.loc[~star_mask, 'PTS'] *= 0.95
+
+    # Final Rounding to Integers
+    cols = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV']
+    for c in cols:
+        df[c] = df[c].round().astype(int)
+        
     return df
 
 # --- NEW: BLOWOUT LOGIC ---
 def apply_blowout_logic(roster_df, wins_gap):
-    """
-    If the team is heavily favored (Wins Gap > 5), rest the starters.
-    """
-    # Create a copy so we don't edit the original dataframe in the session state
     adjusted_roster = roster_df.copy()
-    
     if wins_gap >= 5:
-        # Define "Starters" as anyone averaging > 28 minutes
         starters_mask = adjusted_roster['Avg_Mins'] > 28
         bench_mask = (adjusted_roster['Avg_Mins'] <= 28) & (adjusted_roster['Avg_Mins'] > 0)
-        
-        # Reduce Starter Minutes by ~15% (Approx 5-6 mins)
         adjusted_roster.loc[starters_mask, 'Exp Minutes'] *= 0.85
-        
-        # Give those minutes to the bench (increase by ~20%)
         adjusted_roster.loc[bench_mask, 'Exp Minutes'] *= 1.20
-        
-        return adjusted_roster, True # Returns modified roster and "True" flag
-    
+        return adjusted_roster, True
     return adjusted_roster, False
 
 # --- 4. UI: SIDEBAR ---
@@ -104,7 +143,7 @@ with st.sidebar:
     if st.button("🔄 Reload Database"):
         st.cache_data.clear()
         st.rerun()
-    st.info("Update your Excel files and click here to refresh the app if neeed.")
+    st.info("Update your Excel files and click here to refresh the app.")
 
 # --- 5. UI: MAIN SETUP ---
 st.title("🏀 NBA Game Strategy Simulator (For BW SPM244)")
@@ -145,6 +184,7 @@ def create_roster_editor(team, key):
     df['Exp Minutes'] = df['Avg_Mins']
     
     st.markdown(f"**{team} Rotation**")
+    
     edited_df = st.data_editor(
         df,
         column_order=["Available", "Exp Minutes", "Player", "Position"],
@@ -175,21 +215,18 @@ if run_sim:
     h_stats = get_team_stats(home_team)
     a_stats = get_team_stats(away_team)
     
-    # 1. Blowout Logic Check
-    # We check the gap in recent wins. If > 4, we assume a mismatch.
+    # 1. Blowout Logic
     h_roster_final, h_blowout = apply_blowout_logic(home_roster, h_wins - a_wins)
     a_roster_final, a_blowout = apply_blowout_logic(away_roster, a_wins - h_wins)
     
-    if h_blowout:
-        st.warning(f"⚠️ **Mismatch Detected:** {home_team} is heavily favored. Starters' minutes reduced to simulate 4th quarter rest.")
-    if a_blowout:
-        st.warning(f"⚠️ **Mismatch Detected:** {away_team} is heavily favored. Starters' minutes reduced to simulate 4th quarter rest.")
+    if h_blowout: st.warning(f"⚠️ **Mismatch:** {home_team} favored. Starters resting in 4th.")
+    if a_blowout: st.warning(f"⚠️ **Mismatch:** {away_team} favored. Starters resting in 4th.")
 
     # 2. Pace
     game_pace = (h_stats['Pace'] + a_stats['Pace']) / 2
     pace_factor = game_pace / 100.0
     
-    # 3. Run Sim (Using the Adjusted Rosters)
+    # 3. Run Sim
     h_box_rows = [simulate_player_performance(row, a_stats, pace_factor) for i, row in h_roster_final.iterrows()]
     a_box_rows = [simulate_player_performance(row, h_stats, pace_factor) for i, row in a_roster_final.iterrows()]
     
@@ -199,7 +236,7 @@ if run_sim:
     h_df = pd.DataFrame(h_box_rows)
     a_df = pd.DataFrame(a_box_rows)
     
-    # 4. Normalize
+    # 4. Normalize (Includes "Hero Ball")
     h_df = normalize_stats(h_df)
     a_df = normalize_stats(a_df)
     
@@ -214,7 +251,6 @@ if run_sim:
     final_a_score = int(a_points + a_intangibles)
     
     spread = final_h_score - final_a_score
-    winner = home_team if spread > 0 else away_team
     
     st.balloons()
     
