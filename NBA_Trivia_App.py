@@ -60,55 +60,41 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.start_time = None  
     st.session_state.time_expired = False
 
-# 4. TIMER ACTIVATION MATRIX
-# Scan session state values to see if the user has made their first selection change
-current_inputs = [v for k, v in st.session_state.items() if k.startswith(f"input_{selected_game}_") and v is not None]
+# 4. APP MAIN TITLES
+st.title(f"🏆 {selected_game} Timeline")
 
+# Allocate an isolated UI container slot right above the form for the live countdown
+timer_placeholder = st.empty()
+
+# Trigger timer startup whenever user makes their first select entry choice
+current_inputs = [v for k, v in st.session_state.items() if k.startswith(f"input_{selected_game}_") and v is not None]
 if current_inputs and st.session_state.start_time is None and not st.session_state.game_over:
     st.session_state.start_time = time.time()
 
-# 5. VISUAL COUNTDOWN TIMER DISPLAY
-if st.session_state.start_time is not None and not st.session_state.game_over:
-    elapsed = time.time() - st.session_state.start_time
-    remaining = max(0, 300 - int(elapsed)) # 300 seconds = 5 minutes
-    
-    if remaining <= 0:
-        st.session_state.time_expired = True
-        st.session_state.game_over = True
-        st.session_state.attempts = 3
-        st.rerun()
+# 5. ISOLATED TIMER FRAGMENT (Updates live without breaking input fields)
+@st.fragment(run_every=1.0)
+def render_live_timer():
+    if st.session_state.start_time is not None and not st.session_state.game_over:
+        elapsed = time.time() - st.session_state.start_time
+        remaining = max(0, 300 - int(elapsed)) # 5 minutes = 300 seconds
         
-    # This block renders a bold, red visual countdown box that updates live every single second
-    timer_html = f"""
-    <div style="padding:15px; border-radius:10px; background-color:#ff4b4b; color:white; text-align:center; font-family:sans-serif; font-weight:bold; font-size:24px; margin-bottom:10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);">
-        ⏱️ TIME REMAINING: <span id="countdown">{remaining // 60}:{remaining % 60:02d}</span>
-    </div>
-    <script>
-        var seconds = {remaining};
-        var timer = setInterval(function() {{
-            seconds--;
-            if (seconds <= 0) {{
-                clearInterval(timer);
-                // Force Streamlit to rerun when time reaches zero
-                window.parent.postMessage({{type: 'streamlit:rerun'}}, '*');
-            }} else {{
-                var mins = Math.floor(seconds / 60);
-                var secs = seconds % 60;
-                document.getElementById('countdown').innerHTML = mins + ":" + (secs < 10 ? "0" : "") + secs;
-            }}
-        }}, 1000);
-    </script>
-    """
-    st.components.v1.html(timer_html, height=80)
-    
-elif st.session_state.game_over and st.session_state.time_expired:
-    st.error("⏰ TIME EXPIRED! You took longer than 5 minutes and automatically lost your attempts for this list.")
-elif st.session_state.start_time is None:
-    st.info("⏱️ **The 5-minute timer countdown will appear right here the exact moment you make your first guess!**")
+        if remaining <= 0:
+            st.session_state.time_expired = True
+            st.session_state.game_over = True
+            st.session_state.attempts = 3
+            st.parent_rerun() # Force main app rerun
+            
+        mins, secs = divmod(remaining, 60)
+        timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
+    elif st.session_state.game_over and st.session_state.time_expired:
+        timer_placeholder.error("⏰ TIME EXPIRED! You took longer than 5 minutes and lost all attempts.")
+    elif st.session_state.start_time is None:
+        timer_placeholder.info("⏱️ **The 5-minute timer countdown will start the exact second you make your first guess below!**")
+
+# Run the live ticking timer element
+render_live_timer()
 
 # 6. APP MAIN FORM UI
-st.title(f"🏆 {selected_game} Timeline")
-
 with st.form("timeline_form"):
     st.write(f"### Attempt {st.session_state.attempts}/3")
     
@@ -159,11 +145,14 @@ if submit_btn:
     if all_correct:
         st.success(f"🎉 Incredible! You cleared the entire {selected_game} timeline perfectly on attempt {st.session_state.attempts}!")
         st.session_state.game_over = True
+        st.rerun()
     elif st.session_state.attempts >= 3:
         st.error("❌ Out of attempts! The correct timeline history has been revealed below.")
         st.session_state.game_over = True
+        st.rerun()
     else:
         st.warning("Some items on your list are incorrect. Review the feedback and try again.")
+        st.rerun()
 
 # 8. RESULTS TIMELINE FEEDBACK SCREEN
 if st.session_state.feedback:
