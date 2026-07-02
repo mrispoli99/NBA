@@ -1,106 +1,175 @@
+import streamlit as st
 import pandas as pd
-import numpy as np
-from data_loader import get_era_baselines
+import os
+import time
 
-def calculate_real_pdi(df):
-    """
-    Applies multi-variable adjustments (Pace, Scale, Competition Concentration, 
-    Positional Perimeter Stress, and Continuous Teammate Burden) to a seasonal group.
-    """
-    if df.empty:
-        return df
-        
-    year = int(df['Season'].iloc[0])
-    baselines = get_era_baselines(year)
-    
-    n_teams = baselines['historical_teams']
-    league_base = baselines['league_baseline']
-    kinematic_base = baselines['kinematic_baseline']
-    
-    # 1. Base Performance Layer: Seasonal Win Share Z-Score
-    df['dominance_z'] = (df['WS'] - df['WS'].mean()) / df['WS'].std()
-    
-    pdi_scores = []
-    rsd_list = []
-    psp_list = []
-    scb_list = []
-    
-    for idx, row in df.iterrows():
-        # A. Strength of Competition (Concentration of 20+ PPG Buckets across the league)
-        buckets_per_team = row['League_20_PPG_Count'] / n_teams
-        competition_factor = 1.0 + (buckets_per_team * 0.15)
-        
-        # B. Spacing & Positional Perimeter Stress Engine
-        # Handles the paradox of physical clog down low vs modern hunting/switching on the perimeter
-        if row['3P%'] < 0.10:
-            # PRE-3PT LINE / EARLY ERA: High structural physical congestion in the paint
-            spacing_friction = 1.15
-        else:
-            # MODERN SPACING ERA: Floor weaponization and perimeter recovery stress
-            base_spacing_stress = 1.0 + (row['3P%'] * 0.4) 
-            
-            # Positional Stress Modifier: Frontcourt players (C and PF) get hit with a premium
-            # because they are forced out of the paint to defend pick-and-rolls out to the logo.
-            player_pos = str(row['Pos']).upper()
-            if 'C' in player_pos or 'F' in player_pos:
-                position_stress_multiplier = 1.10  # 10% premium for defensive perimeter range
-            else:
-                position_stress_multiplier = 1.02  # Small guard chasing premium
-                
-            spacing_friction = base_spacing_stress * position_stress_multiplier
-        
-        # Combine macro filters into the Regular Season Baseline
-        era_multiplier = league_base * kinematic_base * (np.log(n_teams) / np.log(30)) * competition_factor * spacing_friction
-        rsd = row['dominance_z'] * era_multiplier
-        
-        # C. Playoff Bracket Format Friction
-        if row['MP'] > 2400 and row['WS'] > 8.0:
-            rounds = 4.0 if year >= 2003 else (3.5 if year >= 1984 else (2.5 if year >= 1970 else 1.5))
-            psp = 0.6 * (rounds * (np.log(n_teams) / np.log(8)))
-        else:
-            psp = 0
-            
-        # D. Continuous Teammate Efficiency Gradient (The Support Fix)
-        # Centered exactly at a league-average 15.0 PER. No sudden cliffs.
-        # Every point below 15 rewards a carrying job; every point above applies a luxury deflation.
-        scb = 1.0 + ((15.0 - row['Core_Support_PER']) * 0.04)
-        scb = np.clip(scb, 0.75, 1.30)  # Capped at a maximum 30% modifier swinging either way
-        
-        # Combine all structural layers
-        raw_pdi = (rsd + psp) * scb
-        pdi_scores.append(max(0, raw_pdi))
-        rsd_list.append(rsd)
-        psp_list.append(psp)
-        scb_list.append(scb)
-        
-    df['raw_pdi'] = pdi_scores
-    df['Regular_Season_Difficulty_Base'] = rsd_list
-    df['Playoff_Format_Friction'] = psp_list
-    df['Supporting_Cast_Modifier'] = scb_list
-    df['Total_League_Teams'] = n_teams
-    
-    return df.sort_values(by='WS', ascending=False).head(50)
+st.set_page_config(page_title="NBA Category Timeline Trivia", layout="centered")
 
-def load_all_real_seasons():
-    """
-    Loads the full pre-scraped 1950-2026 archive from the local CSV,
-    processes seasonal baselines, and applies a true global max 0-100 normalization.
-    """
-    try:
-        raw_df = pd.read_csv("nba_raw_archive.csv")
-    except FileNotFoundError:
-        print("Error: 'nba_raw_archive.csv' not found. Please run build_database.py first.")
-        return pd.DataFrame()
-        
-    processed_seasons = []
-    for season, group in raw_df.groupby('Season'):
-        processed_group = calculate_real_pdi(group)
-        processed_seasons.append(processed_group)
-        
-    full_dataset = pd.concat(processed_seasons, ignore_index=True)
+# 1. CLEAN LOADING ENGINE
+@st.cache_data
+def load_game_data():
+    csv_path = "nba_trivia_data.csv"
+    if not os.path.exists(csv_path): 
+        return None, [], [], pd.DataFrame()
     
-    # Global Max Normalization (Standardized Anchor across history)
-    global_max = full_dataset['raw_pdi'].max()
-    full_dataset['pdi_final'] = (full_dataset['raw_pdi'] / global_max) * 100
+    df = pd.read_csv(csv_path).fillna("N/A")
+    df = df.drop_duplicates(subset=['Year'], keep='first')
     
-    return full_dataset
+    all_players = set()
+    for col in ['MVP', 'DPOY', 'Finals MVP', 'Scoring Leader', 'Assists Leader', 'Rebound Leader']:
+        all_players.update(df[col].astype(str).unique())
+        
+    # FIX: Explicit list of historical/modern NBA team abbreviations to ensure thoroughness
+    global_teams = [
+        "76ers", "Blazers", "Bombers", "Bucks", "Bulls", "Bullets", "Capitols", "Cavs", 
+        "Celtics", "Grizzlies", "Hawks", "Heat", "Jazz", "Kings", "Knicks", "Lakers", 
+        "Magic", "Mavs", "Nets", "Nuggets", "Pacers", "Packers", "Pelicans", "Pistons", 
+        "Raptors", "Rockets", "Suns", "Spurs", "Sonics", "Stags", "Thunder", "Timberwolves", 
+        "Warriors", "Wizards"
+    ]
+    
+    clean_players = sorted([p for p in all_players if p.lower() not in ['nan', 'n/a', '']])
+    
+    return df, clean_players, global_teams
+
+df, global_players, global_teams = load_game_data()
+
+if df is None or df.empty:
+    st.error("⚠️ 'nba_trivia_data.csv' not found or empty! Please run your scraper script first.")
+    st.stop()
+
+# 2. DEFINE GAME CFG MAPS
+game_modes = {
+    "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
+    "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
+    "NBA finals runner up": {"col": "Runner-Up", "type": "team", "start_year": 1948},
+    "NBA MVP": {"col": "MVP", "type": "player", "start_year": 1956},
+    "NBA defensive player of the year": {"col": "DPOY", "type": "player", "start_year": 1983},
+    "NBA Finals MVP": {"col": "Finals MVP", "type": "player", "start_year": 1969},
+    "NBA Assists leader": {"col": "Assists Leader", "type": "player", "start_year": 1948, "limited_options": True},
+    "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
+}
+
+st.sidebar.title("🎮 Select Game Mode")
+selected_game = st.sidebar.radio("Pick a stat line to solve:", list(game_modes.keys()))
+
+game_cfg = game_modes[selected_game]
+target_col = game_cfg["col"]
+filtered_df = df[df['Year'] >= game_cfg["start_year"]].sort_values(by="Year", ascending=False)
+
+# Reset state when shifting game modes
+if "active_game" not in st.session_state or st.session_state.active_game != selected_game:
+    st.session_state.active_game = selected_game
+    st.session_state.attempts = 0
+    st.session_state.game_over = False
+    st.session_state.feedback = {}
+    st.session_state.start_time = None  
+    st.session_state.time_expired = False
+
+st.title(f"🏆 {selected_game} Timeline")
+timer_placeholder = st.empty()
+
+# --- 3. FIX: ACCURATE TIMER START CHECK ---
+# Scan inputs to see if a real selection change happened (ignoring default/unfilled states)
+current_inputs = [v for k, v in st.session_state.items() if k.startswith(f"input_{selected_game}_") and v not in [None, "", "Choose..."]]
+
+if current_inputs and st.session_state.start_time is None and not st.session_state.game_over:
+    st.session_state.start_time = time.time()
+
+# 4. ISOLATED TIMER FRAGMENT
+@st.fragment(run_every=1.0)
+def render_live_timer():
+    if st.session_state.start_time is not None and not st.session_state.game_over:
+        elapsed = time.time() - st.session_state.start_time
+        remaining = max(0, 300 - int(elapsed)) 
+        
+        if remaining <= 0:
+            st.session_state.time_expired = True
+            st.session_state.game_over = True
+            st.session_state.attempts = 3
+            st.parent_rerun() 
+            
+        mins, secs = divmod(remaining, 60)
+        timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
+    elif st.session_state.game_over and st.session_state.time_expired:
+        timer_placeholder.error("⏰ TIME EXPIRED! You took longer than 5 minutes and lost all attempts.")
+    elif st.session_state.start_time is None:
+        timer_placeholder.info("⏱️ **The 5-minute timer countdown will start the exact second you make your first guess below!**")
+
+render_live_timer()
+
+# 5. MAIN FORM WORKSPACE
+with st.form("timeline_form"):
+    st.write(f"### Attempt {st.session_state.attempts}/3")
+    
+    user_guesses = {}
+    
+    for idx, row in filtered_df.iterrows():
+        year = int(row['Year'])
+        
+        if game_cfg.get("limited_options"):
+            past_winners = df[(df['Year'] <= year) & (df['Year'] >= game_cfg["start_year"])].sort_values(by="Year", ascending=False)
+            recent_options = past_winners[target_col].astype(str).unique()[:5]
+            dropdown_options = sorted(list(recent_options))
+        else:
+            dropdown_options = global_teams if game_cfg["type"] == "team" else global_players
+            
+        guess = st.selectbox(
+            f"Year {year}",
+            options=dropdown_options,
+            index=None,
+            placeholder="Choose...",
+            key=f"input_{selected_game}_{year}_{idx}",
+            disabled=st.session_state.game_over
+        )
+        user_guesses[year] = guess or ""
+        
+    submit_btn = st.form_submit_button("Submit Entire List", disabled=st.session_state.game_over)
+
+# 6. EVALUATION LOGIC
+if submit_btn:
+    st.session_state.attempts += 1
+    
+    results = {}
+    all_correct = True
+    
+    for idx, row in filtered_df.iterrows():
+        year = int(row['Year'])
+        actual = str(row[target_col]).lower().strip()
+        user_val = str(user_guesses.get(year, "")).lower().strip()
+        
+        is_correct = (user_val == actual)
+        results[year] = is_correct
+        if not is_correct:
+            all_correct = False
+            
+    st.session_state.feedback = results
+    
+    if all_correct:
+        st.success(f"🎉 Incredible! You cleared the entire timeline perfectly on attempt {st.session_state.attempts}!")
+        st.session_state.game_over = True
+        st.rerun()
+    elif st.session_state.attempts >= 3:
+        st.error("❌ Out of attempts! The correct answers have been revealed below.")
+        st.session_state.game_over = True
+        st.rerun()
+    else:
+        st.warning(f"Some answers are incorrect. You have {3 - st.session_state.attempts} attempt(s) remaining!")
+        st.rerun()
+
+# 7. RESULTS OVERVIEW (FIXED TO DELAY REVEALING ANSWERS)
+if st.session_state.feedback:
+    st.write("---")
+    st.write("### Review Your List Status:")
+    
+    for idx, row in filtered_df.iterrows():
+        year = int(row['Year'])
+        actual = str(row[target_col])
+        is_ok = st.session_state.feedback.get(year, False)
+        
+        if is_ok:
+            st.markdown(f"✅ **{year}:** Correct")
+        else:
+            # FIX: Only reveal the actual answer string value if game_over is set to True
+            reveal = f" *(Answer: {actual})*".replace("N/A", "No Award This Year") if st.session_state.game_over else ""
+            st.markdown(f"❌ **{year}:** Incorrect{reveal}")
