@@ -57,17 +57,17 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
-    st.session_state.start_time = None  # Timer starts uninitialized
+    st.session_state.start_time = None  
     st.session_state.time_expired = False
 
-# --- 4. TIMER ACTIVATION MATRIX ---
-# Check if they have filled anything out yet to trigger the timer start
+# 4. TIMER ACTIVATION MATRIX
+# Scan session state values to see if the user has made their first selection change
 current_inputs = [v for k, v in st.session_state.items() if k.startswith(f"input_{selected_game}_") and v is not None]
 
 if current_inputs and st.session_state.start_time is None and not st.session_state.game_over:
     st.session_state.start_time = time.time()
 
-# 5. LIVE COUNTDOWN LOGIC & INJECTED COMPONENT
+# 5. VISUAL COUNTDOWN TIMER DISPLAY
 if st.session_state.start_time is not None and not st.session_state.game_over:
     elapsed = time.time() - st.session_state.start_time
     remaining = max(0, 300 - int(elapsed)) # 300 seconds = 5 minutes
@@ -78,10 +78,10 @@ if st.session_state.start_time is not None and not st.session_state.game_over:
         st.session_state.attempts = 3
         st.rerun()
         
-    # HTML/JS Visual Ticker Box that forces an internal Streamlit refresh when hitting zero
+    # This block renders a bold, red visual countdown box that updates live every single second
     timer_html = f"""
-    <div style="padding:15px; border-radius:10px; background-color:#ff4b4b; color:white; text-align:center; font-family:sans-serif; font-weight:bold; font-size:22px; margin-bottom:15px;">
-        ⏱️ Time Remaining: <span id="countdown">{remaining // 60}:{remaining % 60:02d}</span>
+    <div style="padding:15px; border-radius:10px; background-color:#ff4b4b; color:white; text-align:center; font-family:sans-serif; font-weight:bold; font-size:24px; margin-bottom:10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);">
+        ⏱️ TIME REMAINING: <span id="countdown">{remaining // 60}:{remaining % 60:02d}</span>
     </div>
     <script>
         var seconds = {remaining};
@@ -89,6 +89,7 @@ if st.session_state.start_time is not None and not st.session_state.game_over:
             seconds--;
             if (seconds <= 0) {{
                 clearInterval(timer);
+                // Force Streamlit to rerun when time reaches zero
                 window.parent.postMessage({{type: 'streamlit:rerun'}}, '*');
             }} else {{
                 var mins = Math.floor(seconds / 60);
@@ -98,11 +99,12 @@ if st.session_state.start_time is not None and not st.session_state.game_over:
         }}, 1000);
     </script>
     """
-    st.components.v1.html(timer_html, height=75)
+    st.components.v1.html(timer_html, height=80)
+    
 elif st.session_state.game_over and st.session_state.time_expired:
-    st.error("⏰ TIME EXPIRED! You took longer than 5 minutes and lost all attempts.")
+    st.error("⏰ TIME EXPIRED! You took longer than 5 minutes and automatically lost your attempts for this list.")
 elif st.session_state.start_time is None:
-    st.info("⏱️ **The 5-minute timer will start the instant you make your first guess select entry below!**")
+    st.info("⏱️ **The 5-minute timer countdown will appear right here the exact moment you make your first guess!**")
 
 # 6. APP MAIN FORM UI
 st.title(f"🏆 {selected_game} Timeline")
