@@ -19,7 +19,6 @@ def load_game_data():
     for col in ['MVP', 'DPOY', 'Finals MVP', 'Scoring Leader', 'Assists Leader', 'Rebound Leader']:
         all_players.update(df[col].astype(str).unique())
         
-    # FIX: Explicit list of historical/modern NBA team abbreviations to ensure thoroughness
     global_teams = [
         "76ers", "Blazers", "Bombers", "Bucks", "Bulls", "Bullets", "Capitols", "Cavs", 
         "Celtics", "Grizzlies", "Hawks", "Heat", "Jazz", "Kings", "Knicks", "Lakers", 
@@ -63,20 +62,13 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
-    st.session_state.start_time = None  
+    st.session_state.start_time = time.time()  # FIX: Start the timer instantly on game load!
     st.session_state.time_expired = False
 
 st.title(f"🏆 {selected_game} Timeline")
 timer_placeholder = st.empty()
 
-# --- 3. FIX: ACCURATE TIMER START CHECK ---
-# Scan inputs to see if a real selection change happened (ignoring default/unfilled states)
-current_inputs = [v for k, v in st.session_state.items() if k.startswith(f"input_{selected_game}_") and v not in [None, "", "Choose..."]]
-
-if current_inputs and st.session_state.start_time is None and not st.session_state.game_over:
-    st.session_state.start_time = time.time()
-
-# 4. ISOLATED TIMER FRAGMENT
+# 3. ISOLATED TIMER FRAGMENT
 @st.fragment(run_every=1.0)
 def render_live_timer():
     if st.session_state.start_time is not None and not st.session_state.game_over:
@@ -93,12 +85,10 @@ def render_live_timer():
         timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
     elif st.session_state.game_over and st.session_state.time_expired:
         timer_placeholder.error("⏰ TIME EXPIRED! You took longer than 5 minutes and lost all attempts.")
-    elif st.session_state.start_time is None:
-        timer_placeholder.info("⏱️ **The 5-minute timer countdown will start the exact second you make your first guess below!**")
 
 render_live_timer()
 
-# 5. MAIN FORM WORKSPACE
+# 4. MAIN FORM WORKSPACE
 with st.form("timeline_form"):
     st.write(f"### Attempt {st.session_state.attempts}/3")
     
@@ -126,7 +116,7 @@ with st.form("timeline_form"):
         
     submit_btn = st.form_submit_button("Submit Entire List", disabled=st.session_state.game_over)
 
-# 6. EVALUATION LOGIC
+# 5. EVALUATION LOGIC
 if submit_btn:
     st.session_state.attempts += 1
     
@@ -157,7 +147,7 @@ if submit_btn:
         st.warning(f"Some answers are incorrect. You have {3 - st.session_state.attempts} attempt(s) remaining!")
         st.rerun()
 
-# 7. RESULTS OVERVIEW (FIXED TO DELAY REVEALING ANSWERS)
+# 6. RESULTS OVERVIEW
 if st.session_state.feedback:
     st.write("---")
     st.write("### Review Your List Status:")
@@ -170,6 +160,5 @@ if st.session_state.feedback:
         if is_ok:
             st.markdown(f"✅ **{year}:** Correct")
         else:
-            # FIX: Only reveal the actual answer string value if game_over is set to True
             reveal = f" *(Answer: {actual})*".replace("N/A", "No Award This Year") if st.session_state.game_over else ""
             st.markdown(f"❌ **{year}:** Incorrect{reveal}")
