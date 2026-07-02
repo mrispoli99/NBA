@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import time
 
 st.set_page_config(page_title="NBA Category Timeline Trivia", layout="centered")
 
@@ -12,11 +13,8 @@ def load_game_data():
         return None, [], [], pd.DataFrame()
     
     df = pd.read_csv(csv_path).fillna("N/A")
-    
-    # Clean up any potential double rows right here at load time
     df = df.drop_duplicates(subset=['Year'], keep='first')
     
-    # Comprehensive master sets for full autocomplete categories
     all_players = set()
     for col in ['MVP', 'DPOY', 'Finals MVP', 'Scoring Leader', 'Assists Leader', 'Rebound Leader']:
         all_players.update(df[col].astype(str).unique())
@@ -51,8 +49,6 @@ selected_game = st.sidebar.radio("Pick a stat line to solve:", list(game_modes.k
 
 game_cfg = game_modes[selected_game]
 target_col = game_cfg["col"]
-
-# Filter timeline to valid years where the award/stat actually existed
 filtered_df = df[df['Year'] >= game_cfg["start_year"]].sort_values(by="Year", ascending=False)
 
 # Reset score/attempts state when switching game modes
@@ -61,31 +57,72 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
+    st.session_state.start_time = None  # Timer starts uninitialized
+    st.session_state.time_expired = False
 
-# 4. APP MAIN UI
+# --- 4. TIMER ACTIVATION MATRIX ---
+# Check if they have filled anything out yet to trigger the timer start
+current_inputs = [v for k, v in st.session_state.items() if k.startswith(f"input_{selected_game}_") and v is not None]
+
+if current_inputs and st.session_state.start_time is None and not st.session_state.game_over:
+    st.session_state.start_time = time.time()
+
+# 5. LIVE COUNTDOWN LOGIC & INJECTED COMPONENT
+if st.session_state.start_time is not None and not st.session_state.game_over:
+    elapsed = time.time() - st.session_state.start_time
+    remaining = max(0, 300 - int(elapsed)) # 300 seconds = 5 minutes
+    
+    if remaining <= 0:
+        st.session_state.time_expired = True
+        st.session_state.game_over = True
+        st.session_state.attempts = 3
+        st.rerun()
+        
+    # HTML/JS Visual Ticker Box that forces an internal Streamlit refresh when hitting zero
+    timer_html = f"""
+    <div style="padding:15px; border-radius:10px; background-color:#ff4b4b; color:white; text-align:center; font-family:sans-serif; font-weight:bold; font-size:22px; margin-bottom:15px;">
+        ⏱️ Time Remaining: <span id="countdown">{remaining // 60}:{remaining % 60:02d}</span>
+    </div>
+    <script>
+        var seconds = {remaining};
+        var timer = setInterval(function() {{
+            seconds--;
+            if (seconds <= 0) {{
+                clearInterval(timer);
+                window.parent.postMessage({{type: 'streamlit:rerun'}}, '*');
+            }} else {{
+                var mins = Math.floor(seconds / 60);
+                var secs = seconds % 60;
+                document.getElementById('countdown').innerHTML = mins + ":" + (secs < 10 ? "0" : "") + secs;
+            }}
+        }}, 1000);
+    </script>
+    """
+    st.components.v1.html(timer_html, height=75)
+elif st.session_state.game_over and st.session_state.time_expired:
+    st.error("⏰ TIME EXPIRED! You took longer than 5 minutes and lost all attempts.")
+elif st.session_state.start_time is None:
+    st.info("⏱️ **The 5-minute timer will start the instant you make your first guess select entry below!**")
+
+# 6. APP MAIN FORM UI
 st.title(f"🏆 {selected_game} Timeline")
-st.write(f"Fill out the chronological history list. You have up to 3 submission attempts.")
 
 with st.form("timeline_form"):
     st.write(f"### Attempt {st.session_state.attempts}/3")
     
     user_guesses = {}
     
-    # Loop over each year to generate a row item
     for idx, row in filtered_df.iterrows():
         year = int(row['Year'])
         correct_value = str(row[target_col])
         
-        # Determine selectable options dropdown array
         if game_cfg.get("limited_options"):
-            # Get the five most recent winners relative to the current row's year
             past_winners = df[(df['Year'] <= year) & (df['Year'] >= game_cfg["start_year"])].sort_values(by="Year", ascending=False)
             recent_options = past_winners[target_col].astype(str).unique()[:5]
             dropdown_options = sorted(list(recent_options))
         else:
             dropdown_options = global_teams if game_cfg["type"] == "team" else global_players
             
-        # FIX: Added incremental tracking string markers to key values to guarantee uniqueness
         guess = st.selectbox(
             f"Year {year}",
             options=dropdown_options,
@@ -98,7 +135,7 @@ with st.form("timeline_form"):
         
     submit_btn = st.form_submit_button("Submit Entire List", disabled=st.session_state.game_over)
 
-# 5. EVALUATION LOGIC
+# 7. EVALUATION LOGIC
 if submit_btn:
     st.session_state.attempts += 1
     
@@ -126,7 +163,7 @@ if submit_btn:
     else:
         st.warning("Some items on your list are incorrect. Review the feedback and try again.")
 
-# 6. RESULTS TIMELINE FEEDBACK SCREEN
+# 8. RESULTS TIMELINE FEEDBACK SCREEN
 if st.session_state.feedback:
     st.write("---")
     st.write("### Review Your List Status:")
