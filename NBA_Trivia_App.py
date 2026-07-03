@@ -94,7 +94,9 @@ with st.form("timeline_form"):
     
     user_guesses = {}
     
-    for idx, row in filtered_df.iterrows():
+    # We use a unique counter to guarantee no two selectboxes share a key, 
+    # even if there are duplicate years or rows in your CSV.
+    for i, (idx, row) in enumerate(filtered_df.iterrows()):
         year = int(row['Year'])
         
         if game_cfg.get("limited_options"):
@@ -104,12 +106,15 @@ with st.form("timeline_form"):
         else:
             dropdown_options = global_teams if game_cfg["type"] == "team" else global_players
             
+        # The key is now explicitly unique based on the game mode, year, and loop index
+        unique_key = f"{selected_game}_{year}_{i}"
+        
         guess = st.selectbox(
             f"Year {year}",
             options=dropdown_options,
             index=None,
             placeholder="Choose...",
-            key=f"input_{selected_game}_{year}_{idx}",
+            key=unique_key,
             disabled=st.session_state.game_over
         )
         user_guesses[year] = guess or ""
