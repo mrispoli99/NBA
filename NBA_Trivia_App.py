@@ -62,18 +62,18 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
-    st.session_state.start_time = time.time()  # FIX: Start the timer instantly on game load!
+    st.session_state.start_time = time.time()  # Starts immediately on menu selection
     st.session_state.time_expired = False
 
 st.title(f"🏆 {selected_game} Timeline")
 timer_placeholder = st.empty()
 
-# 3. ISOLATED TIMER FRAGMENT
+# 3. ISOLATED TIMER FRAGMENT (7 MINUTES)
 @st.fragment(run_every=1.0)
 def render_live_timer():
     if st.session_state.start_time is not None and not st.session_state.game_over:
         elapsed = time.time() - st.session_state.start_time
-        remaining = max(0, 300 - int(elapsed)) 
+        remaining = max(0, 420 - int(elapsed)) # 7 minutes * 60 seconds = 420
         
         if remaining <= 0:
             st.session_state.time_expired = True
@@ -84,7 +84,7 @@ def render_live_timer():
         mins, secs = divmod(remaining, 60)
         timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
     elif st.session_state.game_over and st.session_state.time_expired:
-        timer_placeholder.error("⏰ TIME EXPIRED! You took longer than 5 minutes and lost all attempts.")
+        timer_placeholder.error("⏰ TIME EXPIRED! You took longer than 7 minutes and automatically lost your attempts.")
 
 render_live_timer()
 
@@ -136,21 +136,40 @@ if submit_btn:
     st.session_state.feedback = results
     
     if all_correct:
-        st.success(f"🎉 Incredible! You cleared the entire timeline perfectly on attempt {st.session_state.attempts}!")
         st.session_state.game_over = True
         st.rerun()
     elif st.session_state.attempts >= 3:
-        st.error("❌ Out of attempts! The correct answers have been revealed below.")
         st.session_state.game_over = True
         st.rerun()
     else:
         st.warning(f"Some answers are incorrect. You have {3 - st.session_state.attempts} attempt(s) remaining!")
         st.rerun()
 
-# 6. RESULTS OVERVIEW
+# 6. RESULTS OVERVIEW & CONGRATULATIONS GENERATOR
 if st.session_state.feedback:
     st.write("---")
-    st.write("### Review Your List Status:")
+    
+    # Calculate score metrics for dynamic tier messaging
+    total_items = len(st.session_state.feedback)
+    correct_count = sum(1 for v in st.session_state.feedback.values() if v is True)
+    accuracy_pct = int((correct_count / total_items) * 100) if total_items > 0 else 0
+    
+    # Show endgame banner ONLY when the round is completely finished
+    if st.session_state.game_over:
+        st.write("### 🏁 Final Game Summary")
+        st.info(f"**Final Score:** {correct_count} / {total_items} Correct ({accuracy_pct}%)")
+        
+        if accuracy_pct == 100:
+            st.balloons()
+            st.success("👑 **LEGENDARY STATUS!** You cleared the entire timeline perfectly! Your basketball IQ is off the charts.")
+        elif accuracy_pct >= 85:
+            st.success("🔥 **CHAMPION PERFORMANCE!** Outstanding job! You missed just a tiny handful of slots. You really know your hoop history.")
+        elif accuracy_pct >= 50:
+            st.warning("💪 **SOLID EFFORT!** Not bad at all! You got more than half of them correct. A bit more studying and you'll climb into elite status.")
+        else:
+            st.error("🧱 **AIRBALL!** Oof, tough round. Time to hit the gym, check the tape, and try harder next game!")
+    else:
+        st.write("### 📝 Current List Status (Keep Going!):")
     
     for idx, row in filtered_df.iterrows():
         year = int(row['Year'])
@@ -160,5 +179,6 @@ if st.session_state.feedback:
         if is_ok:
             st.markdown(f"✅ **{year}:** Correct")
         else:
+            # Hide answers until game_over is triggered by time expiration or attempt exhaustion
             reveal = f" *(Answer: {actual})*".replace("N/A", "No Award This Year") if st.session_state.game_over else ""
             st.markdown(f"❌ **{year}:** Incorrect{reveal}")
