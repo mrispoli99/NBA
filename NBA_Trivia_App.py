@@ -33,6 +33,7 @@ if df is None or df.empty:
 
 # 2. DEFINE MAPS FOR THE GAME MODES
 game_modes = {
+    "🏠 HOME SCREEN": {"col": "NONE", "type": "meta", "start_year": 0},
     "⚡ LIGHTNING RAPID FIRE": {"col": "SPECIAL", "type": "mixed", "start_year": 1948},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
@@ -45,8 +46,8 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
-st.sidebar.title("🎮 Select Game Mode")
-selected_game = st.sidebar.radio("Pick a trivia challenge:", list(game_modes.keys()))
+st.sidebar.title("🎮 Main Navigation")
+selected_game = st.sidebar.radio("Go to:", list(game_modes.keys()))
 game_cfg = game_modes[selected_game]
 
 # Reset configurations upon changing menus
@@ -57,36 +58,35 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.feedback = {}
     st.session_state.start_time = None  
     st.session_state.time_expired = False
-    # Specific variables for lightning mode
     st.session_state.lt_started = False
     st.session_state.lt_chosen_metrics = []
-    st.session_state.lt_max_questions = 30  # Default fallback
+    st.session_state.lt_max_questions = 30  
     st.session_state.lt_correct = 0
     st.session_state.lt_total = 0
     st.session_state.lt_current_q = None
     st.session_state.lt_last_feedback = ""
 
-st.title(f"🏆 {selected_game}")
-timer_placeholder = st.empty()
+# Display global timer only if a competitive game mode is active
+if selected_game != "🏠 HOME SCREEN":
+    timer_placeholder = st.empty()
 
-# 3. GLOBAL TIMER FRAGMENT (7 MINUTES)
-@st.fragment(run_every=1.0)
-def render_live_timer():
-    if st.session_state.start_time is not None and not st.session_state.game_over:
-        elapsed = time.time() - st.session_state.start_time
-        remaining = max(0, 420 - int(elapsed))
-        if remaining <= 0:
-            st.session_state.time_expired = True
-            st.session_state.game_over = True
-            st.parent_rerun()
-        mins, secs = divmod(remaining, 60)
-        timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
-    elif st.session_state.game_over and st.session_state.time_expired:
-        timer_placeholder.error("⏰ TIME EXPIRED! The clock hit 7 minutes. See your final summary scorecard below.")
+    @st.fragment(run_every=1.0)
+    def render_live_timer():
+        if st.session_state.start_time is not None and not st.session_state.game_over:
+            elapsed = time.time() - st.session_state.start_time
+            remaining = max(0, 420 - int(elapsed))
+            if remaining <= 0:
+                st.session_state.time_expired = True
+                st.session_state.game_over = True
+                st.parent_rerun()
+            mins, secs = divmod(remaining, 60)
+            timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
+        elif st.session_state.game_over and st.session_state.time_expired:
+            timer_placeholder.error("⏰ TIME EXPIRED! The 7-minute limit was reached. Check your summary scorecard below.")
 
-render_live_timer()
+    render_live_timer()
 
-# --- HELPER FUNCTION FOR ACCURATE GRADING MESSAGES ---
+# Grading Message Builder
 def render_grading_message(correct, total):
     pct = int((correct / total) * 100) if total > 0 else 0
     st.write("---")
@@ -102,45 +102,64 @@ def render_grading_message(correct, total):
         st.error("🧱 **AIRBALL!** Tough game. Hit the tape, practice, and try again!")
 
 # ==========================================
-# BRANCH A: LIGHTNING RAPID FIRE GAME LOOP
+# BRANCH A: THE WELCOME HOME SCREEN
 # ==========================================
-if selected_game == "⚡ LIGHTNING RAPID FIRE":
-    # 1. SETUP PHASE
+if selected_game == "🏠 HOME SCREEN":
+    st.title("🏀 Welcome to the NBA Complete Trivia Arena!")
+    st.markdown("Test your historical basketball knowledge across decades of league records. Select a challenge from the sidebar navigation menu or review the rules of engagement below.")
+    
+    st.write("---")
+    st.write("## 🕹️ Choose Your Way to Play")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("⚡ Lightning Rapid Fire")
+        st.write("""
+        * **The Vibe:** Arcade style flashcards.
+        * **The Rules:** Pick which metrics you want mixed into the round, select your question ceiling (25, 30, 40, or 50 questions), and face random prompts one-by-one.
+        * **The Catch:** You answer instantly, view right/wrong feedback, and move to the next card until the question limit or the **7-minute timer** runs out!
+        """)
+        
+    with col2:
+        st.subheader("📋 Chronological Timeline Lists")
+        st.write("""
+        * **The Vibe:** Deep history marathons.
+        * **The Rules:** Select any individual stat line (like *NBA MVP* or *Finals Winner*) to view the complete historical sequence list down the page.
+        * **The Catch:** Fill out the entire table and submit all answers at once. You get **3 attempts** to fix errors before answers are unlocked, capped by a **7-minute timer**.
+        """)
+        
+    st.write("---")
+    st.write("### 📊 Metric Breakdown Reference Guide")
+    st.markdown("""
+    * **Finals Winner / Runner Up:** Search via short franchise names (e.g., *Cavs, Mavs, Lakers, Stags*). Goes back to **1948**.
+    * **Scoring / Assists / Rebound Leaders:** Tracks chronological **Per-Game Average** league leaders (PPG, APG, RPG).
+    * **Rookie of the Year (ROY):** Historical league newcomers stretching back to **1953**.
+    * **Regular Season MVP:** Peak individual excellence tracked chronologically since **1956**.
+    * **Finals MVP:** Championship series defining performances starting from **1969**.
+    * **Defensive Player of the Year (DPOY):** Lock-down anchors tracked from its inception in **1983**.
+    """)
+
+# ==========================================
+# BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
+# ==========================================
+elif selected_game == "⚡ LIGHTNING RAPID FIRE":
     if not st.session_state.lt_started:
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        # FIX: "NBA Rookie of the year" is now allowed and listed in the options pool
-        available_metrics = [
-            k for k in game_modes.keys() if k != "⚡ LIGHTNING RAPID FIRE"
-        ]
-        
-        chosen_metrics = st.multiselect(
-            "Metrics to include:",
-            options=available_metrics,
-            default=available_metrics,
-            placeholder="Select at least one metric..."
-        )
-        
-        # NEW: Round limit selector configuration
-        chosen_limit = st.selectbox(
-            "Number of questions for this round:",
-            options=[25, 30, 40, 50],
-            index=1  # Defaults to 30
-        )
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN"]]
+        chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
+        chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
         start_blitz = st.button("🚀 Start Blitz Game", disabled=len(chosen_metrics) == 0)
-        
         if start_blitz:
             st.session_state.lt_chosen_metrics = chosen_metrics
             st.session_state.lt_max_questions = chosen_limit
             st.session_state.lt_started = True
             st.session_state.start_time = time.time()  
             st.rerun()
-
-    # 2. ACTION PHASE
     else:
-        # Check if we hit the user-selected question cap
         if st.session_state.lt_total >= st.session_state.lt_max_questions:
             st.session_state.game_over = True
 
@@ -149,7 +168,6 @@ if selected_game == "⚡ LIGHTNING RAPID FIRE":
                 st.success(f"🎯 **Completed all {st.session_state.lt_max_questions} questions!** Check your final stats:")
             render_grading_message(st.session_state.lt_correct, st.session_state.lt_total)
         else:
-            # Generate questions dynamically using only chosen keys
             if st.session_state.lt_current_q is None:
                 q_mode = random.choice(st.session_state.lt_chosen_metrics)
                 cfg = game_modes[q_mode]
@@ -194,7 +212,7 @@ if selected_game == "⚡ LIGHTNING RAPID FIRE":
                 st.markdown(st.session_state.lt_last_feedback)
 
 # ==========================================
-# BRANCH B: REGULAR TIMELINE LIST GAME MODES
+# BRANCH C: REGULAR TIMELINE LIST GAME MODES
 # ==========================================
 else:
     if st.session_state.start_time is None:
