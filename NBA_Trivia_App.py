@@ -46,29 +46,30 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
-# --- TWO-WAY NAVIGATION CONTROLLER SYSTEM ---
-# Initialize master navigation controller value
+# --- FIX: ROBUST STATE ROUTING OVERLAY ---
+# Initialize the state variable if it's the user's first visit
 if "nav_state" not in st.session_state:
     st.session_state.nav_state = "🏠 HOME SCREEN"
 
-# Callback function to handle manual sidebar radio button adjustments
-def sync_navigation():
-    st.session_state.nav_state = st.session_state.sidebar_widget_key
+# Look up the current position index matching our session state text string
+modes_list = list(game_modes.keys())
+current_idx = modes_list.index(st.session_state.nav_state)
 
-# Draw the sidebar radio button bound directly to the tracking key state
+# Draw the sidebar radio button using a dynamic index pointer. 
+# We do not map a custom widget 'key' to avoid read-only session state deadlocks.
 st.sidebar.title("🎮 Main Navigation")
 selected_game = st.sidebar.radio(
     "Go to:", 
-    options=list(game_modes.keys()), 
-    key="sidebar_widget_key",
-    on_change=sync_navigation
+    options=modes_list, 
+    index=current_idx
 )
 
-# Crucial Sync: Force the widget key state to match if a dashboard button edits st.session_state.nav_state
-if st.session_state.sidebar_widget_key != st.session_state.nav_state:
-    st.session_state.sidebar_widget_key = st.session_state.nav_state
+# If the user clicks a sidebar choice manually, sync our tracking key state
+if selected_game != st.session_state.nav_state:
+    st.session_state.nav_state = selected_game
+    st.rerun()
 
-# Re-read active selection configurations
+# Establish game active structures
 active_selection = st.session_state.nav_state
 game_cfg = game_modes[active_selection]
 
