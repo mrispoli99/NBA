@@ -46,11 +46,28 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
+# --- NAVIGATION CONTROLLER MATRIX ---
+# Initialize navigation key state if missing
+if "navigation_target" not in st.session_state:
+    st.session_state.navigation_target = "🏠 HOME SCREEN"
+
+# Render sidebar option tied to our session state controller
 st.sidebar.title("🎮 Main Navigation")
-selected_game = st.sidebar.radio("Go to:", list(game_modes.keys()))
+selected_game = st.sidebar.radio(
+    "Go to:", 
+    options=list(game_modes.keys()), 
+    index=list(game_modes.keys()).index(st.session_state.navigation_target),
+    key="sidebar_nav"
+)
+
+# Sync state if a user uses the sidebar option manually
+if selected_game != st.session_state.navigation_target:
+    st.session_state.navigation_target = selected_game
+    st.rerun()
+
 game_cfg = game_modes[selected_game]
 
-# Reset configurations upon changing menus
+# Reset configuration counters upon changing active view targets
 if "active_game" not in st.session_state or st.session_state.active_game != selected_game:
     st.session_state.active_game = selected_game
     st.session_state.attempts = 0
@@ -66,8 +83,12 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.lt_current_q = None
     st.session_state.lt_last_feedback = ""
 
-# Display global timer only if a competitive game mode is active
+# Add Home button header to active game modes
 if selected_game != "🏠 HOME SCREEN":
+    if st.button("🏡 Return to Home Screen", key="global_home_btn"):
+        st.session_state.navigation_target = "🏠 HOME SCREEN"
+        st.rerun()
+    st.title(f"🏆 {selected_game}")
     timer_placeholder = st.empty()
 
     @st.fragment(run_every=1.0)
@@ -82,11 +103,10 @@ if selected_game != "🏠 HOME SCREEN":
             mins, secs = divmod(remaining, 60)
             timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
         elif st.session_state.game_over and st.session_state.time_expired:
-            timer_placeholder.error("⏰ TIME EXPIRED! The 7-minute limit was reached. Check your summary scorecard below.")
+            timer_placeholder.error("⏰ TIME EXPIRED! The 7-minute limit was reached.")
 
     render_live_timer()
 
-# Grading Message Builder
 def render_grading_message(correct, total):
     pct = int((correct / total) * 100) if total > 0 else 0
     st.write("---")
@@ -97,7 +117,7 @@ def render_grading_message(correct, total):
     elif pct >= 85:
         st.success("🔥 **CHAMPION PERFORMANCE!** Outstanding job! You're elite.")
     elif pct >= 50:
-        st.warning("💪 **SOLID EFFORT!** Nice work! You passed, but study up for elite status.")
+        st.warning("💪 **SOLID EFFORT!** Nice work! You passed.")
     else:
         st.error("🧱 **AIRBALL!** Tough game. Hit the tape, practice, and try again!")
 
@@ -106,10 +126,10 @@ def render_grading_message(correct, total):
 # ==========================================
 if selected_game == "🏠 HOME SCREEN":
     st.title("🏀 Welcome to the NBA Complete Trivia Arena!")
-    st.markdown("Test your historical basketball knowledge across decades of league records. Select a challenge from the sidebar navigation menu or review the rules of engagement below.")
+    st.markdown("Test your historical basketball knowledge across decades of league records. Launch an interactive game mode right from this dashboard or use the left navigation sidebar.")
     
     st.write("---")
-    st.write("## 🕹️ Choose Your Way to Play")
+    st.write("## 🕹️ Select Your Way to Play")
     
     col1, col2 = st.columns(2)
     
@@ -117,28 +137,59 @@ if selected_game == "🏠 HOME SCREEN":
         st.subheader("⚡ Lightning Rapid Fire")
         st.write("""
         * **The Vibe:** Arcade style flashcards.
-        * **The Rules:** Pick which metrics you want mixed into the round, select your question ceiling (25, 30, 40, or 50 questions), and face random prompts one-by-one.
-        * **The Catch:** You answer instantly, view right/wrong feedback, and move to the next card until the question limit or the **7-minute timer** runs out!
+        * **The Rules:** Pick metric pools, select your question ceiling, and face random prompts one-by-one.
+        * **The Catch:** View instant feedback and move to the next card against a **7-minute timer**.
         """)
+        if st.button("🚀 Launch Lightning Mode", use_container_width=True):
+            st.session_state.navigation_target = "⚡ LIGHTNING RAPID FIRE"
+            st.rerun()
         
     with col2:
         st.subheader("📋 Chronological Timeline Lists")
         st.write("""
         * **The Vibe:** Deep history marathons.
-        * **The Rules:** Select any individual stat line (like *NBA MVP* or *Finals Winner*) to view the complete historical sequence list down the page.
-        * **The Catch:** Fill out the entire table and submit all answers at once. You get **3 attempts** to fix errors before answers are unlocked, capped by a **7-minute timer**.
+        * **The Rules:** Select an individual stat line to view its complete historical timeline sequence list down the page.
+        * **The Catch:** Submit answers all at once. You get **3 attempts** to fix errors before answers reveal, capped by a **7-minute timer**.
         """)
         
     st.write("---")
-    st.write("### 📊 Metric Breakdown Reference Guide")
-    st.markdown("""
-    * **Finals Winner / Runner Up:** Search via short franchise names (e.g., *Cavs, Mavs, Lakers, Stags*). Goes back to **1948**.
-    * **Scoring / Assists / Rebound Leaders:** Tracks chronological **Per-Game Average** league leaders (PPG, APG, RPG).
-    * **Rookie of the Year (ROY):** Historical league newcomers stretching back to **1953**.
-    * **Regular Season MVP:** Peak individual excellence tracked chronologically since **1956**.
-    * **Finals MVP:** Championship series defining performances starting from **1969**.
-    * **Defensive Player of the Year (DPOY):** Lock-down anchors tracked from its inception in **1983**.
-    """)
+    st.write("### 📋 Launch a Historical Timeline Category List:")
+    
+    # Categorized layout buttons to let users pop directly into their chosen metric timeline list
+    b_col1, b_col2, b_col3 = st.columns(3)
+    
+    with b_col1:
+        if st.button("🏅 Regular Season MVP", use_container_width=True):
+            st.session_state.navigation_target = "NBA MVP"
+            st.rerun()
+        if st.button("🥇 Finals MVP", use_container_width=True):
+            st.session_state.navigation_target = "NBA Finals MVP"
+            st.rerun()
+        if st.button("🛡️ Defensive Player (DPOY)", use_container_width=True):
+            st.session_state.navigation_target = "NBA defensive player of the year"
+            st.rerun()
+
+    with b_col2:
+        if st.button("🏆 Finals Champion", use_container_width=True):
+            st.session_state.navigation_target = "NBA finals winner"
+            st.rerun()
+        if st.button("🥈 Finals Runner Up", use_container_width=True):
+            st.session_state.navigation_target = "NBA finals runner up"
+            st.rerun()
+        if st.button("👶 Rookie of the Year", use_container_width=True):
+            st.session_state.navigation_target = "NBA Rookie of the year"
+            st.rerun()
+
+    with b_col3:
+        if st.button("🎯 Scoring Leader (PPG)", use_container_width=True):
+            st.session_state.navigation_target = "NBA Scoring leader"
+            st.rerun()
+        if st.button("🪄 Assists Leader (APG)", use_container_width=True):
+            st.session_state.navigation_target = "NBA Assists leader"
+            st.rerun()
+        if st.button("🪂 Rebound Leader (RPG)", use_container_width=True):
+            st.session_state.navigation_target = "NBA Rebound leader"
+            st.rerun()
 
 # ==========================================
 # BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
