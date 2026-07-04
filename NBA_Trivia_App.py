@@ -55,11 +55,12 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
-    st.session_state.start_time = None  # Delay start time initialization
+    st.session_state.start_time = None  
     st.session_state.time_expired = False
     # Specific variables for lightning mode
     st.session_state.lt_started = False
     st.session_state.lt_chosen_metrics = []
+    st.session_state.lt_max_questions = 30  # Default fallback
     st.session_state.lt_correct = 0
     st.session_state.lt_total = 0
     st.session_state.lt_current_q = None
@@ -104,40 +105,48 @@ def render_grading_message(correct, total):
 # BRANCH A: LIGHTNING RAPID FIRE GAME LOOP
 # ==========================================
 if selected_game == "⚡ LIGHTNING RAPID FIRE":
-    # 1. SETUP PHASE: If game hasn't started yet, show configuration panel
+    # 1. SETUP PHASE
     if not st.session_state.lt_started:
         st.write("### ⚙️ Configure Your Blitz Round")
-        st.markdown("Choose which metric pools you want randomly mixed into your 30-question rapid fire round. The 7-minute timer **will not start** until you press the button below.")
+        st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        # Valid metrics list (Excluding Lightning itself and ROY)
+        # FIX: "NBA Rookie of the year" is now allowed and listed in the options pool
         available_metrics = [
-            k for k in game_modes.keys() 
-            if k not in ["⚡ LIGHTNING RAPID FIRE", "NBA Rookie of the year"]
+            k for k in game_modes.keys() if k != "⚡ LIGHTNING RAPID FIRE"
         ]
         
-        chosen = st.multiselect(
+        chosen_metrics = st.multiselect(
             "Metrics to include:",
             options=available_metrics,
             default=available_metrics,
             placeholder="Select at least one metric..."
         )
         
-        start_blitz = st.button("🚀 Start Blitz Game", disabled=len(chosen) == 0)
+        # NEW: Round limit selector configuration
+        chosen_limit = st.selectbox(
+            "Number of questions for this round:",
+            options=[25, 30, 40, 50],
+            index=1  # Defaults to 30
+        )
+        
+        start_blitz = st.button("🚀 Start Blitz Game", disabled=len(chosen_metrics) == 0)
         
         if start_blitz:
-            st.session_state.lt_chosen_metrics = chosen
+            st.session_state.lt_chosen_metrics = chosen_metrics
+            st.session_state.lt_max_questions = chosen_limit
             st.session_state.lt_started = True
-            st.session_state.start_time = time.time()  # FIX: Timer initializes precisely on button click!
+            st.session_state.start_time = time.time()  
             st.rerun()
 
-    # 2. ACTION PHASE: Run the arcade loops
+    # 2. ACTION PHASE
     else:
-        if st.session_state.lt_total >= 30:
+        # Check if we hit the user-selected question cap
+        if st.session_state.lt_total >= st.session_state.lt_max_questions:
             st.session_state.game_over = True
 
         if st.session_state.game_over:
-            if st.session_state.lt_total >= 30 and not st.session_state.time_expired:
-                st.success("🎯 **Completed all 30 questions!** Check your final stats:")
+            if st.session_state.lt_total >= st.session_state.lt_max_questions and not st.session_state.time_expired:
+                st.success(f"🎯 **Completed all {st.session_state.lt_max_questions} questions!** Check your final stats:")
             render_grading_message(st.session_state.lt_correct, st.session_state.lt_total)
         else:
             # Generate questions dynamically using only chosen keys
@@ -154,7 +163,7 @@ if selected_game == "⚡ LIGHTNING RAPID FIRE":
                 }
             
             q = st.session_state.lt_current_q
-            st.subheader(f"Question {st.session_state.lt_total + 1} of 30")
+            st.subheader(f"Question {st.session_state.lt_total + 1} of {st.session_state.lt_max_questions}")
             st.markdown(f"### Guess the **{q['mode_name']}** for the year **{q['year']}**")
             
             if q.get("limited_options"):
@@ -188,7 +197,6 @@ if selected_game == "⚡ LIGHTNING RAPID FIRE":
 # BRANCH B: REGULAR TIMELINE LIST GAME MODES
 # ==========================================
 else:
-    # Auto-initialize regular lists on menu click instantly
     if st.session_state.start_time is None:
         st.session_state.start_time = time.time()
 
