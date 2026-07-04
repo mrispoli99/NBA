@@ -55,9 +55,11 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
-    st.session_state.start_time = time.time()
+    st.session_state.start_time = None  # Delay start time initialization
     st.session_state.time_expired = False
     # Specific variables for lightning mode
+    st.session_state.lt_started = False
+    st.session_state.lt_chosen_metrics = []
     st.session_state.lt_correct = 0
     st.session_state.lt_total = 0
     st.session_state.lt_current_q = None
@@ -66,7 +68,7 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
 st.title(f"🏆 {selected_game}")
 timer_placeholder = st.empty()
 
-# 3. GLOBAL TIMER FRAGMENT (7 MINUTES - 420 SECONDS)
+# 3. GLOBAL TIMER FRAGMENT (7 MINUTES)
 @st.fragment(run_every=1.0)
 def render_live_timer():
     if st.session_state.start_time is not None and not st.session_state.game_over:
@@ -102,69 +104,94 @@ def render_grading_message(correct, total):
 # BRANCH A: LIGHTNING RAPID FIRE GAME LOOP
 # ==========================================
 if selected_game == "⚡ LIGHTNING RAPID FIRE":
-    # Double check if we hit the limit of 30 questions
-    if st.session_state.lt_total >= 30:
-        st.session_state.game_over = True
-
-    if st.session_state.game_over:
-        if st.session_state.lt_total >= 30 and not st.session_state.time_expired:
-            st.success("🎯 **Completed all 30 questions!** Check your final stats:")
-        render_grading_message(st.session_state.lt_correct, st.session_state.lt_total)
-    else:
-        # Generate a question if one isn't currently active
-        if st.session_state.lt_current_q is None:
-            # ENHANCEMENT: Removed "NBA Rookie of the year" from valid lightning modes
-            valid_modes = [
-                k for k in game_modes.keys() 
-                if k not in ["⚡ LIGHTNING RAPID FIRE", "NBA Rookie of the year"]
-            ]
-            q_mode = random.choice(valid_modes)
-            cfg = game_modes[q_mode]
-            possible_years = df[df['Year'] >= cfg["start_year"]]['Year'].tolist()
-            q_year = random.choice(possible_years)
-            
-            row = df[df['Year'] == q_year].iloc[0]
-            st.session_state.lt_current_q = {
-                "year": q_year, "mode_name": q_mode, "col": cfg["col"], "type": cfg["type"],
-                "correct_ans": str(row[cfg["col"]]), "limited_options": cfg.get("limited_options", False)
-            }
+    # 1. SETUP PHASE: If game hasn't started yet, show configuration panel
+    if not st.session_state.lt_started:
+        st.write("### ⚙️ Configure Your Blitz Round")
+        st.markdown("Choose which metric pools you want randomly mixed into your 30-question rapid fire round. The 7-minute timer **will not start** until you press the button below.")
         
-        q = st.session_state.lt_current_q
-        st.subheader(f"Question {st.session_state.lt_total + 1} of 30")
-        st.markdown(f"### Guess the **{q['mode_name']}** for the year **{q['year']}**")
+        # Valid metrics list (Excluding Lightning itself and ROY)
+        available_metrics = [
+            k for k in game_modes.keys() 
+            if k not in ["⚡ LIGHTNING RAPID FIRE", "NBA Rookie of the year"]
+        ]
         
-        # Pull options dynamically
-        if q.get("limited_options"):
-            past_winners = df[(df['Year'] <= q['year']) & (df['Year'] >= game_modes[q['mode_name']]["start_year"])].sort_values(by="Year", ascending=False)
-            dropdown_options = sorted(list(past_winners[q['col']].astype(str).unique()[:5]))
-        else:
-            dropdown_options = global_teams if q["type"] == "team" else global_players
-
-        with st.form("lightning_form", clear_on_submit=True):
-            user_guess = st.selectbox("Your Answer:", options=dropdown_options, index=None, placeholder="Type to filter...")
-            submit_ans = st.form_submit_button("Submit Answer")
-            
-        if submit_ans:
-            st.session_state.lt_total += 1
-            actual = q["correct_ans"].lower().strip()
-            guessed = str(user_guess or "").lower().strip()
-            
-            if guessed == actual:
-                st.session_state.lt_correct += 1
-                st.session_state.lt_last_feedback = f"✅ **Correct!** The answer was *{q['correct_ans']}*."
-            else:
-                st.session_state.lt_last_feedback = f"❌ **Incorrect.** You guessed *{user_guess}*. The answer was *{q['correct_ans']}*."
-                
-            st.session_state.lt_current_q = None  # Force generation of a new card
+        chosen = st.multiselect(
+            "Metrics to include:",
+            options=available_metrics,
+            default=available_metrics,
+            placeholder="Select at least one metric..."
+        )
+        
+        start_blitz = st.button("🚀 Start Blitz Game", disabled=len(chosen) == 0)
+        
+        if start_blitz:
+            st.session_state.lt_chosen_metrics = chosen
+            st.session_state.lt_started = True
+            st.session_state.start_time = time.time()  # FIX: Timer initializes precisely on button click!
             st.rerun()
+
+    # 2. ACTION PHASE: Run the arcade loops
+    else:
+        if st.session_state.lt_total >= 30:
+            st.session_state.game_over = True
+
+        if st.session_state.game_over:
+            if st.session_state.lt_total >= 30 and not st.session_state.time_expired:
+                st.success("🎯 **Completed all 30 questions!** Check your final stats:")
+            render_grading_message(st.session_state.lt_correct, st.session_state.lt_total)
+        else:
+            # Generate questions dynamically using only chosen keys
+            if st.session_state.lt_current_q is None:
+                q_mode = random.choice(st.session_state.lt_chosen_metrics)
+                cfg = game_modes[q_mode]
+                possible_years = df[df['Year'] >= cfg["start_year"]]['Year'].tolist()
+                q_year = random.choice(possible_years)
+                
+                row = df[df['Year'] == q_year].iloc[0]
+                st.session_state.lt_current_q = {
+                    "year": q_year, "mode_name": q_mode, "col": cfg["col"], "type": cfg["type"],
+                    "correct_ans": str(row[cfg["col"]]), "limited_options": cfg.get("limited_options", False)
+                }
             
-        if st.session_state.lt_last_feedback:
-            st.markdown(st.session_state.lt_last_feedback)
+            q = st.session_state.lt_current_q
+            st.subheader(f"Question {st.session_state.lt_total + 1} of 30")
+            st.markdown(f"### Guess the **{q['mode_name']}** for the year **{q['year']}**")
+            
+            if q.get("limited_options"):
+                past_winners = df[(df['Year'] <= q['year']) & (df['Year'] >= game_modes[q['mode_name']]["start_year"])].sort_values(by="Year", ascending=False)
+                dropdown_options = sorted(list(past_winners[q['col']].astype(str).unique()[:5]))
+            else:
+                dropdown_options = global_teams if q["type"] == "team" else global_players
+
+            with st.form("lightning_form", clear_on_submit=True):
+                user_guess = st.selectbox("Your Answer:", options=dropdown_options, index=None, placeholder="Type to filter...")
+                submit_ans = st.form_submit_button("Submit Answer")
+                
+            if submit_ans:
+                st.session_state.lt_total += 1
+                actual = q["correct_ans"].lower().strip()
+                guessed = str(user_guess or "").lower().strip()
+                
+                if guessed == actual:
+                    st.session_state.lt_correct += 1
+                    st.session_state.lt_last_feedback = f"✅ **Correct!** The answer was *{q['correct_ans']}*."
+                else:
+                    st.session_state.lt_last_feedback = f"❌ **Incorrect.** You guessed *{user_guess}*. The answer was *{q['correct_ans']}*."
+                    
+                st.session_state.lt_current_q = None  
+                st.rerun()
+                
+            if st.session_state.lt_last_feedback:
+                st.markdown(st.session_state.lt_last_feedback)
 
 # ==========================================
 # BRANCH B: REGULAR TIMELINE LIST GAME MODES
 # ==========================================
 else:
+    # Auto-initialize regular lists on menu click instantly
+    if st.session_state.start_time is None:
+        st.session_state.start_time = time.time()
+
     filtered_df = df[df['Year'] >= game_cfg["start_year"]].sort_values(by="Year", ascending=False)
     
     with st.form("timeline_form"):
