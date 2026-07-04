@@ -46,24 +46,33 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
-# --- FIX: ACCURATE STATE NAVIGATION INTERCEPTOR ---
-# Initialize navigation key state if missing
+# --- FIX: MANUAL STATE ROUTING OVERLAY ---
+# Initialize navigation tracking key safely
 if "navigation_target" not in st.session_state:
     st.session_state.navigation_target = "🏠 HOME SCREEN"
 
-# Render sidebar radio tied DIRECTLY to our navigation key via Session State sync hooks
+# We determine the correct starting index matching our custom state variable
+modes_list = list(game_modes.keys())
+default_index = modes_list.index(st.session_state.navigation_target)
+
 st.sidebar.title("🎮 Main Navigation")
 selected_game = st.sidebar.radio(
     "Go to:", 
-    options=list(game_modes.keys()), 
-    key="navigation_target" # This connects the widget value directly to st.session_state.navigation_target
+    options=modes_list, 
+    index=default_index,
+    key="sidebar_nav_widget" # FIX: Widget uses a dummy key so 'navigation_target' stays writeable!
 )
 
-game_cfg = game_modes[selected_game]
+# If user manually clicks the sidebar radio, sync it back to our true state tracker
+if selected_game != st.session_state.navigation_target:
+    st.session_state.navigation_target = selected_game
+
+# Re-evaluate active game loop parameters cleanly
+game_cfg = game_modes[st.session_state.navigation_target]
 
 # Reset configuration counters upon changing active view targets
-if "active_game" not in st.session_state or st.session_state.active_game != selected_game:
-    st.session_state.active_game = selected_game
+if "active_game" not in st.session_state or st.session_state.active_game != st.session_state.navigation_target:
+    st.session_state.active_game = st.session_state.navigation_target
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
@@ -78,12 +87,12 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
     st.session_state.lt_last_feedback = ""
 
 # Add Home button header to active game modes
-if selected_game != "🏠 HOME SCREEN":
+if st.session_state.navigation_target != "🏠 HOME SCREEN":
     if st.button("🏡 Return to Home Screen", key="global_home_btn"):
-        st.session_state.navigation_target = "🏠 HOME SCREEN" # Changes state variable
+        st.session_state.navigation_target = "🏠 HOME SCREEN"
         st.rerun()
         
-    st.title(f"🏆 {selected_game}")
+    st.title(f"🏆 {st.session_state.navigation_target}")
     timer_placeholder = st.empty()
 
     @st.fragment(run_every=1.0)
@@ -119,7 +128,7 @@ def render_grading_message(correct, total):
 # ==========================================
 # BRANCH A: THE WELCOME HOME SCREEN
 # ==========================================
-if selected_game == "🏠 HOME SCREEN":
+if st.session_state.navigation_target == "🏠 HOME SCREEN":
     st.title("🏀 Welcome to the NBA Complete Trivia Arena!")
     st.markdown("Test your historical basketball knowledge across decades of league records. Launch an interactive game mode right from this dashboard or use the left navigation sidebar.")
     
@@ -188,7 +197,7 @@ if selected_game == "🏠 HOME SCREEN":
 # ==========================================
 # BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
 # ==========================================
-elif selected_game == "⚡ LIGHTNING RAPID FIRE":
+elif st.session_state.navigation_target == "⚡ LIGHTNING RAPID FIRE":
     if not st.session_state.lt_started:
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
@@ -279,7 +288,7 @@ else:
                 
             guess = st.selectbox(
                 f"Year {year}", options=dropdown_options, index=None,
-                placeholder="Choose...", key=f"{selected_game}_{year}_{i}", disabled=st.session_state.game_over
+                placeholder="Choose...", key=f"{st.session_state.navigation_target}_{year}_{i}", disabled=st.session_state.game_over
             )
             user_guesses[year] = guess or ""
             
