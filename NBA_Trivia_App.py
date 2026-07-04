@@ -271,10 +271,24 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
 # ==========================================
 # BRANCH C: REGULAR TIMELINE LIST GAME MODES
 # ==========================================
+# ==========================================
+# BRANCH C: REGULAR TIMELINE LIST GAME MODES
+# ==========================================
 else:
-    # --- FIX: FORCE BROWSER TO SCROLL IMMEDIATELY TO THE TOP ON LOAD ---
+    # --- FIXED: MOBILE-AGGRESSIVE TIMED SCROLL RESET ---
     st.components.v1.html(
-        "<script>window.parent.scrollTo(0,0);</script>", 
+        """
+        <script>
+            setTimeout(function() {
+                // Target the main parent container (Streamlit Cloud app frames)
+                window.parent.scrollTo({top: 0, left: 0, behavior: 'instant'});
+                // Fallback direct overrides for mobile Safari/Chrome viewport wrappers
+                window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+                document.documentElement.scrollTop = 0;
+                document.body.scrollTop = 0;
+            }, 100); // 100ms delay ensures elements are loaded before snapping up
+        </script>
+        """, 
         height=0, 
         width=0
     )
