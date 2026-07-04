@@ -31,7 +31,7 @@ if df is None or df.empty:
     st.error("⚠️ 'nba_trivia_data.csv' not found. Run 'build_nba_data.py' first.")
     st.stop()
 
-# 2. DEFINE MAPS FOR THE 9 GAME MODES
+# 2. DEFINE MAPS FOR THE GAME MODES
 game_modes = {
     "⚡ LIGHTNING RAPID FIRE": {"col": "SPECIAL", "type": "mixed", "start_year": 1948},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
@@ -102,12 +102,22 @@ def render_grading_message(correct, total):
 # BRANCH A: LIGHTNING RAPID FIRE GAME LOOP
 # ==========================================
 if selected_game == "⚡ LIGHTNING RAPID FIRE":
+    # Double check if we hit the limit of 30 questions
+    if st.session_state.lt_total >= 30:
+        st.session_state.game_over = True
+
     if st.session_state.game_over:
+        if st.session_state.lt_total >= 30 and not st.session_state.time_expired:
+            st.success("🎯 **Completed all 30 questions!** Check your final stats:")
         render_grading_message(st.session_state.lt_correct, st.session_state.lt_total)
     else:
         # Generate a question if one isn't currently active
         if st.session_state.lt_current_q is None:
-            valid_modes = [k for k in game_modes.keys() if k != "⚡ LIGHTNING RAPID FIRE"]
+            # ENHANCEMENT: Removed "NBA Rookie of the year" from valid lightning modes
+            valid_modes = [
+                k for k in game_modes.keys() 
+                if k not in ["⚡ LIGHTNING RAPID FIRE", "NBA Rookie of the year"]
+            ]
             q_mode = random.choice(valid_modes)
             cfg = game_modes[q_mode]
             possible_years = df[df['Year'] >= cfg["start_year"]]['Year'].tolist()
@@ -120,7 +130,7 @@ if selected_game == "⚡ LIGHTNING RAPID FIRE":
             }
         
         q = st.session_state.lt_current_q
-        st.subheader(f"Question #{st.session_state.lt_total + 1}")
+        st.subheader(f"Question {st.session_state.lt_total + 1} of 30")
         st.markdown(f"### Guess the **{q['mode_name']}** for the year **{q['year']}**")
         
         # Pull options dynamically
@@ -141,11 +151,11 @@ if selected_game == "⚡ LIGHTNING RAPID FIRE":
             
             if guessed == actual:
                 st.session_state.lt_correct += 1
-                st.session_state.lt_last_feedback = f"✅ **Correct!** The answer was indeed *{q['correct_ans']}*."
+                st.session_state.lt_last_feedback = f"✅ **Correct!** The answer was *{q['correct_ans']}*."
             else:
                 st.session_state.lt_last_feedback = f"❌ **Incorrect.** You guessed *{user_guess}*. The answer was *{q['correct_ans']}*."
                 
-            st.session_state.lt_current_q = None  # Reset to generate a new question
+            st.session_state.lt_current_q = None  # Force generation of a new card
             st.rerun()
             
         if st.session_state.lt_last_feedback:
