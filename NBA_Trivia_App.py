@@ -281,21 +281,38 @@ else:
         st.write(f"### Attempt {st.session_state.attempts}/3")
         user_guesses = {}
         
-        for i, (idx, row) in enumerate(filtered_df.iterrows()):
-            year = int(row['Year'])
-            if game_cfg.get("limited_options"):
-                past_winners = df[(df['Year'] <= year) & (df['Year'] >= game_cfg["start_year"])].sort_values(by="Year", ascending=False)
-                dropdown_options = sorted(list(past_winners[target_col].astype(str).unique()[:5]))
-            else:
-                dropdown_options = global_teams if game_cfg["type"] == "team" else global_players
-                
-            guess = st.selectbox(
-                f"Year {year}", options=dropdown_options, index=None,
-                placeholder="Choose...", key=f"{active_selection}_{year}_{i}", disabled=st.session_state.game_over
-            )
-            user_guesses[year] = guess or ""
+        # --- NEW: COMPACT 4-COLUMN GRID GENERATOR ---
+        # We loop through the historical timeline data rows in chunks of 4
+        rows_data = [filtered_df[i:i + 4] for i in range(0, len(filtered_df), 4)]
+        
+        for row_chunk in rows_data:
+            # Create a clean horizontal row container with 4 balanced columns
+            cols = st.columns(4)
             
-        submit_btn = st.form_submit_button("Submit Entire List", disabled=st.session_state.game_over)
+            for index, (idx, row) in enumerate(row_chunk.iterrows()):
+                year = int(row['Year'])
+                
+                # Fetch dropdown options matching target category criteria
+                if game_cfg.get("limited_options"):
+                    past_winners = df[(df['Year'] <= year) & (df['Year'] >= game_cfg["start_year"])].sort_values(by="Year", ascending=False)
+                    dropdown_options = sorted(list(past_winners[target_col].astype(str).unique()[:5]))
+                else:
+                    dropdown_options = global_teams if game_cfg["type"] == "team" else global_players
+                
+                # Assign the element to its respective column position index (0 to 3)
+                with cols[index]:
+                    guess = st.selectbox(
+                        f"Year {year}", 
+                        options=dropdown_options, 
+                        index=None,
+                        placeholder="Choose...", 
+                        key=f"{active_selection}_{year}_{idx}", 
+                        disabled=st.session_state.game_over
+                    )
+                    user_guesses[year] = guess or ""
+            
+        st.write("---")
+        submit_btn = st.form_submit_button("Submit Entire List", disabled=st.session_state.game_over, use_container_width=True)
 
     if submit_btn:
         st.session_state.attempts += 1
@@ -315,7 +332,7 @@ else:
             st.session_state.game_over = True
         st.rerun()
 
-    # Score Overview Render
+    # Score Overview Render (Also split into columns for cleaner layout mapping)
     if st.session_state.feedback:
         total_items = len(st.session_state.feedback)
         correct_count = sum(1 for v in st.session_state.feedback.values() if v is True)
@@ -325,12 +342,18 @@ else:
         else:
             st.write(f"### 📝 Current List Status (Attempts Remaining: {3 - st.session_state.attempts}):")
             
-        for idx, row in filtered_df.iterrows():
-            year = int(row['Year'])
-            actual = str(row[target_col])
-            is_ok = st.session_state.feedback.get(year, False)
-            if is_ok:
-                st.markdown(f"✅ **{year}:** Correct")
-            else:
-                reveal = f" *(Answer: {actual})*".replace("N/A", "No Award This Year") if st.session_state.game_over else ""
-                st.markdown(f"❌ **{year}:** Incorrect{reveal}")
+        # Format the feedback layout into matching 4-column segments as well!
+        feedback_rows = [filtered_df[i:i + 4] for i in range(0, len(filtered_df), 4)]
+        for f_row in feedback_rows:
+            f_cols = st.columns(4)
+            for f_index, (idx, row) in enumerate(f_row.iterrows()):
+                year = int(row['Year'])
+                actual = str(row[target_col])
+                is_ok = st.session_state.feedback.get(year, False)
+                
+                with f_cols[f_index]:
+                    if is_ok:
+                        st.markdown(f"✅ **{year}:** Correct")
+                    else:
+                        reveal = f" *({actual})*".replace("N/A", "No Award") if st.session_state.game_over else ""
+                        st.markdown(f"❌ **{year}:** {reveal}")
