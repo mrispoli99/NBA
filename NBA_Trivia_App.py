@@ -46,24 +46,18 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
-# --- NAVIGATION CONTROLLER MATRIX ---
+# --- FIX: ACCURATE STATE NAVIGATION INTERCEPTOR ---
 # Initialize navigation key state if missing
 if "navigation_target" not in st.session_state:
     st.session_state.navigation_target = "🏠 HOME SCREEN"
 
-# Render sidebar option tied to our session state controller
+# Render sidebar radio tied DIRECTLY to our navigation key via Session State sync hooks
 st.sidebar.title("🎮 Main Navigation")
 selected_game = st.sidebar.radio(
     "Go to:", 
     options=list(game_modes.keys()), 
-    index=list(game_modes.keys()).index(st.session_state.navigation_target),
-    key="sidebar_nav"
+    key="navigation_target" # This connects the widget value directly to st.session_state.navigation_target
 )
-
-# Sync state if a user uses the sidebar option manually
-if selected_game != st.session_state.navigation_target:
-    st.session_state.navigation_target = selected_game
-    st.rerun()
 
 game_cfg = game_modes[selected_game]
 
@@ -86,8 +80,9 @@ if "active_game" not in st.session_state or st.session_state.active_game != sele
 # Add Home button header to active game modes
 if selected_game != "🏠 HOME SCREEN":
     if st.button("🏡 Return to Home Screen", key="global_home_btn"):
-        st.session_state.navigation_target = "🏠 HOME SCREEN"
+        st.session_state.navigation_target = "🏠 HOME SCREEN" # Changes state variable
         st.rerun()
+        
     st.title(f"🏆 {selected_game}")
     timer_placeholder = st.empty()
 
@@ -155,7 +150,6 @@ if selected_game == "🏠 HOME SCREEN":
     st.write("---")
     st.write("### 📋 Launch a Historical Timeline Category List:")
     
-    # Categorized layout buttons to let users pop directly into their chosen metric timeline list
     b_col1, b_col2, b_col3 = st.columns(3)
     
     with b_col1:
