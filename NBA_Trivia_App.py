@@ -46,33 +46,35 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
-# --- FIX: MANUAL STATE ROUTING OVERLAY ---
-# Initialize navigation tracking key safely
-if "navigation_target" not in st.session_state:
-    st.session_state.navigation_target = "🏠 HOME SCREEN"
+# --- TWO-WAY NAVIGATION CONTROLLER SYSTEM ---
+# Initialize master navigation controller value
+if "nav_state" not in st.session_state:
+    st.session_state.nav_state = "🏠 HOME SCREEN"
 
-# We determine the correct starting index matching our custom state variable
-modes_list = list(game_modes.keys())
-default_index = modes_list.index(st.session_state.navigation_target)
+# Callback function to handle manual sidebar radio button adjustments
+def sync_navigation():
+    st.session_state.nav_state = st.session_state.sidebar_widget_key
 
+# Draw the sidebar radio button bound directly to the tracking key state
 st.sidebar.title("🎮 Main Navigation")
 selected_game = st.sidebar.radio(
     "Go to:", 
-    options=modes_list, 
-    index=default_index,
-    key="sidebar_nav_widget" # FIX: Widget uses a dummy key so 'navigation_target' stays writeable!
+    options=list(game_modes.keys()), 
+    key="sidebar_widget_key",
+    on_change=sync_navigation
 )
 
-# If user manually clicks the sidebar radio, sync it back to our true state tracker
-if selected_game != st.session_state.navigation_target:
-    st.session_state.navigation_target = selected_game
+# Crucial Sync: Force the widget key state to match if a dashboard button edits st.session_state.nav_state
+if st.session_state.sidebar_widget_key != st.session_state.nav_state:
+    st.session_state.sidebar_widget_key = st.session_state.nav_state
 
-# Re-evaluate active game loop parameters cleanly
-game_cfg = game_modes[st.session_state.navigation_target]
+# Re-read active selection configurations
+active_selection = st.session_state.nav_state
+game_cfg = game_modes[active_selection]
 
 # Reset configuration counters upon changing active view targets
-if "active_game" not in st.session_state or st.session_state.active_game != st.session_state.navigation_target:
-    st.session_state.active_game = st.session_state.navigation_target
+if "active_game" not in st.session_state or st.session_state.active_game != active_selection:
+    st.session_state.active_game = active_selection
     st.session_state.attempts = 0
     st.session_state.game_over = False
     st.session_state.feedback = {}
@@ -87,12 +89,12 @@ if "active_game" not in st.session_state or st.session_state.active_game != st.s
     st.session_state.lt_last_feedback = ""
 
 # Add Home button header to active game modes
-if st.session_state.navigation_target != "🏠 HOME SCREEN":
+if active_selection != "🏠 HOME SCREEN":
     if st.button("🏡 Return to Home Screen", key="global_home_btn"):
-        st.session_state.navigation_target = "🏠 HOME SCREEN"
+        st.session_state.nav_state = "🏠 HOME SCREEN"
         st.rerun()
         
-    st.title(f"🏆 {st.session_state.navigation_target}")
+    st.title(f"🏆 {active_selection}")
     timer_placeholder = st.empty()
 
     @st.fragment(run_every=1.0)
@@ -128,7 +130,7 @@ def render_grading_message(correct, total):
 # ==========================================
 # BRANCH A: THE WELCOME HOME SCREEN
 # ==========================================
-if st.session_state.navigation_target == "🏠 HOME SCREEN":
+if active_selection == "🏠 HOME SCREEN":
     st.title("🏀 Welcome to the NBA Complete Trivia Arena!")
     st.markdown("Test your historical basketball knowledge across decades of league records. Launch an interactive game mode right from this dashboard or use the left navigation sidebar.")
     
@@ -145,7 +147,7 @@ if st.session_state.navigation_target == "🏠 HOME SCREEN":
         * **The Catch:** View instant feedback and move to the next card against a **7-minute timer**.
         """)
         if st.button("🚀 Launch Lightning Mode", use_container_width=True):
-            st.session_state.navigation_target = "⚡ LIGHTNING RAPID FIRE"
+            st.session_state.nav_state = "⚡ LIGHTNING RAPID FIRE"
             st.rerun()
         
     with col2:
@@ -163,41 +165,41 @@ if st.session_state.navigation_target == "🏠 HOME SCREEN":
     
     with b_col1:
         if st.button("🏅 Regular Season MVP", use_container_width=True):
-            st.session_state.navigation_target = "NBA MVP"
+            st.session_state.nav_state = "NBA MVP"
             st.rerun()
         if st.button("🥇 Finals MVP", use_container_width=True):
-            st.session_state.navigation_target = "NBA Finals MVP"
+            st.session_state.nav_state = "NBA Finals MVP"
             st.rerun()
         if st.button("🛡️ Defensive Player (DPOY)", use_container_width=True):
-            st.session_state.navigation_target = "NBA defensive player of the year"
+            st.session_state.nav_state = "NBA defensive player of the year"
             st.rerun()
 
     with b_col2:
         if st.button("🏆 Finals Champion", use_container_width=True):
-            st.session_state.navigation_target = "NBA finals winner"
+            st.session_state.nav_state = "NBA finals winner"
             st.rerun()
         if st.button("🥈 Finals Runner Up", use_container_width=True):
-            st.session_state.navigation_target = "NBA finals runner up"
+            st.session_state.nav_state = "NBA finals runner up"
             st.rerun()
         if st.button("👶 Rookie of the Year", use_container_width=True):
-            st.session_state.navigation_target = "NBA Rookie of the year"
+            st.session_state.nav_state = "NBA Rookie of the year"
             st.rerun()
 
     with b_col3:
         if st.button("🎯 Scoring Leader (PPG)", use_container_width=True):
-            st.session_state.navigation_target = "NBA Scoring leader"
+            st.session_state.nav_state = "NBA Scoring leader"
             st.rerun()
         if st.button("🪄 Assists Leader (APG)", use_container_width=True):
-            st.session_state.navigation_target = "NBA Assists leader"
+            st.session_state.nav_state = "NBA Assists leader"
             st.rerun()
         if st.button("🪂 Rebound Leader (RPG)", use_container_width=True):
-            st.session_state.navigation_target = "NBA Rebound leader"
+            st.session_state.nav_state = "NBA Rebound leader"
             st.rerun()
 
 # ==========================================
 # BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
 # ==========================================
-elif st.session_state.navigation_target == "⚡ LIGHTNING RAPID FIRE":
+elif active_selection == "⚡ LIGHTNING RAPID FIRE":
     if not st.session_state.lt_started:
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
@@ -288,7 +290,7 @@ else:
                 
             guess = st.selectbox(
                 f"Year {year}", options=dropdown_options, index=None,
-                placeholder="Choose...", key=f"{st.session_state.navigation_target}_{year}_{i}", disabled=st.session_state.game_over
+                placeholder="Choose...", key=f"{active_selection}_{year}_{i}", disabled=st.session_state.game_over
             )
             user_guesses[year] = guess or ""
             
