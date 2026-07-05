@@ -110,7 +110,6 @@ if active_selection != "🏠 HOME SCREEN":
     def render_live_timer():
         if st.session_state.start_time is not None and not st.session_state.game_over:
             elapsed = time.time() - st.session_state.start_time
-            # Set time ceiling dynamically based on mode context
             max_seconds = st.session_state.hof_duration_mins * 60 if active_selection == "🏛️ HOF NAMING SPRINT" else 420
             remaining = max(0, max_seconds - int(elapsed))
             
@@ -153,10 +152,10 @@ if active_selection == "🏠 HOME SCREEN":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("⚡ Lightning Rapid Fire & Sprints")
+        st.subheader("⚡ Lightning Modes & Sprints")
         st.write("""
         * **Rapid Fire Blitz:** Custom-filter trivia pools to face a quick 25-50 random card session.
-        * ** Naismith HOF Sprint:** Race against a 3, 5, 7, or 9-minute buzzer to text-input as many Hall of Fame players as you can recall with smart typo leniency!
+        * **Naismith HOF Sprint:** Race against a 3, 5, 7, or 9-minute buzzer to text-input as many Hall of Fame players as you can recall with smart typo leniency!
         """)
         s_btn1, s_btn2 = st.columns(2)
         with s_btn1:
@@ -300,8 +299,7 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
             count = len(st.session_state.hof_correct_guesses)
             mins_selected = st.session_state.hof_duration_mins
             
-            # --- COMPUTE DURATION-ADJUSTED PACING PERFORMANCE MATRIX ---
-            gpm = round(count / mins_selected, 1) # Guesses Per Minute (GPM)
+            gpm = round(count / mins_selected, 1) 
             
             st.info(f"**Final Score:** {count} Players Named in {mins_selected} Minutes")
             st.metric(label="Your Typing Velocity (Guesses Per Minute)", value=f"{gpm} GPM")
