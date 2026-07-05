@@ -113,29 +113,49 @@ if active_selection != "🏠 HOME SCREEN":
         st.rerun()
         
     st.title(f"🏆 {active_selection}")
-    
-    # We define an explicit target layout block for the ticking text
-    timer_container = st.empty()
 
-    @st.fragment(run_every=1.0)
-    def render_live_timer(placeholder):
-        if st.session_state.start_time is not None and not st.session_state.game_over:
-            elapsed = time.time() - st.session_state.start_time
-            max_seconds = st.session_state.hof_duration_mins * 60 if active_selection == "🏛️ HOF NAMING SPRINT" else 420
-            remaining = max(0, max_seconds - int(elapsed))
-            
-            if remaining <= 0:
-                st.session_state.time_expired = True
-                st.session_state.game_over = True
-                st.rerun()
-                
-            mins, secs = divmod(remaining, 60)
-            placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
-        elif st.session_state.game_over and st.session_state.time_expired:
-            placeholder.error("⏰ TIME EXPIRED! Check your final stats below.")
+    # --- Authoritative expiry check ---
+    # This runs inline as part of the normal script (every real rerun, e.g. each
+    # guess submission) instead of on an independent background schedule, so it
+    # can never collide with a form submission mid-render.
+    remaining = 0
+    if st.session_state.start_time is not None and not st.session_state.game_over:
+        elapsed = time.time() - st.session_state.start_time
+        max_seconds = st.session_state.hof_duration_mins * 60 if active_selection == "🏛️ HOF NAMING SPRINT" else 420
+        remaining = max(0, max_seconds - int(elapsed))
+        if remaining <= 0:
+            st.session_state.time_expired = True
+            st.session_state.game_over = True
 
-    # Execute fragment by passing target reference downstream
-    render_live_timer(timer_container)
+    # --- Cosmetic ticking clock ---
+    # Pure client-side JavaScript: it never calls back into Streamlit, so it
+    # can't trigger or collide with a rerun. It's reseeded with the accurate
+    # server-side "remaining" value every time a real rerun happens anyway.
+    if st.session_state.game_over and st.session_state.time_expired:
+        st.error("⏰ TIME EXPIRED! Check your final stats below.")
+    elif st.session_state.start_time is not None and not st.session_state.game_over:
+        st.components.v1.html(f"""
+            <div style="font-size:1.05rem;font-weight:600;color:#c0392b;
+                 padding:0.55rem 1rem;border:1px solid #f5b7b1;border-radius:0.5rem;
+                 background:#fdecea;font-family:inherit;display:inline-block;">
+                ⏱️ TIME REMAINING: <span id="tt"></span>
+            </div>
+            <script>
+                let remaining = {remaining};
+                const el = document.getElementById("tt");
+                function render() {{
+                    const m = Math.floor(remaining / 60);
+                    const s = String(remaining % 60).padStart(2, "0");
+                    el.textContent = m + ":" + s;
+                }}
+                render();
+                const iv = setInterval(() => {{
+                    remaining = Math.max(0, remaining - 1);
+                    render();
+                    if (remaining <= 0) clearInterval(iv);
+                }}, 1000);
+            </script>
+        """, height=48)
 
 def render_grading_message(correct, total):
     pct = int((correct / total) * 100) if total > 0 else 0
