@@ -64,7 +64,7 @@ game_modes = {
 if "nav_state" not in st.session_state:
     st.session_state.nav_state = "🏠 HOME SCREEN"
 
-# Look up the correct integer index matching our current session state text string
+# Look up the correct index position matching our master state tracking string
 modes_list = list(game_modes.keys())
 current_idx = modes_list.index(st.session_state.nav_state)
 
@@ -75,7 +75,7 @@ selected_game = st.sidebar.radio(
     index=current_idx
 )
 
-# If the user manually clicks a sidebar choice, sync our tracking key state
+# Sync state tracker seamlessly if navigation triggers via sidebar manually
 if selected_game != st.session_state.nav_state:
     st.session_state.nav_state = selected_game
     st.rerun()
@@ -83,7 +83,7 @@ if selected_game != st.session_state.nav_state:
 active_selection = st.session_state.nav_state
 game_cfg = game_modes[active_selection]
 
-# --- RESET STATE WHEN SWITCHING GAME MODES ---
+# --- SESSION STATE INITIALIZATION & STATE REBOOTS ---
 if "active_game" not in st.session_state or st.session_state.active_game != active_selection:
     st.session_state.active_game = active_selection
     st.session_state.attempts = 0
@@ -91,7 +91,7 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.feedback = {}
     st.session_state.start_time = None  
     st.session_state.time_expired = False
-    # Lightning mode states
+    # Lightning mode state variables
     st.session_state.lt_started = False
     st.session_state.lt_chosen_metrics = []
     st.session_state.lt_max_questions = 30  
@@ -99,17 +99,26 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.lt_total = 0
     st.session_state.lt_current_q = None
     st.session_state.lt_last_feedback = ""
-    # HOF Sprint states
+    # HOF Sprint state variables
     st.session_state.hof_started = False
     st.session_state.hof_duration_mins = 5
     st.session_state.hof_correct_guesses = []
 
-# Global Timer Renderer
+# ==========================================
+# 3. GLOBAL ENCAPSULATED TIMER FRAME
+# ==========================================
 if active_selection != "🏠 HOME SCREEN":
-    timer_placeholder = st.empty()
+    if st.button("🏡 Return to Home Screen", key="global_home_btn"):
+        st.session_state.nav_state = "🏠 HOME SCREEN"
+        st.rerun()
+        
+    st.title(f"🏆 {active_selection}")
+    
+    # We define an explicit target layout block for the ticking text
+    timer_container = st.empty()
 
     @st.fragment(run_every=1.0)
-    def render_live_timer():
+    def render_live_timer(placeholder):
         if st.session_state.start_time is not None and not st.session_state.game_over:
             elapsed = time.time() - st.session_state.start_time
             max_seconds = st.session_state.hof_duration_mins * 60 if active_selection == "🏛️ HOF NAMING SPRINT" else 420
@@ -121,11 +130,12 @@ if active_selection != "🏠 HOME SCREEN":
                 st.parent_rerun()
                 
             mins, secs = divmod(remaining, 60)
-            timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
+            placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
         elif st.session_state.game_over and st.session_state.time_expired:
-            timer_placeholder.error("⏰ TIME EXPIRED! See your final stats below.")
+            placeholder.error("⏰ TIME EXPIRED! Check your final stats below.")
 
-    render_live_timer()
+    # Execute fragment by passing target reference downstream
+    render_live_timer(timer_container)
 
 def render_grading_message(correct, total):
     pct = int((correct / total) * 100) if total > 0 else 0
@@ -252,6 +262,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
             else:
                 dropdown_options = global_teams if q["type"] == "team" else global_players
 
+            # Form submit clears automatically without manual rerun conflicts
             with st.form("lightning_form", clear_on_submit=True):
                 user_guess = st.selectbox("Your Answer:", options=dropdown_options, index=None, placeholder="Type to filter...")
                 submit_ans = st.form_submit_button("Submit Answer")
@@ -302,19 +313,18 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
             mins_selected = st.session_state.hof_duration_mins
             
             gpm = round(count / mins_selected, 1) 
-            
             st.info(f"**Final Score:** {count} Players Named in {mins_selected} Minutes")
             st.metric(label="Your Typing Velocity (Guesses Per Minute)", value=f"{gpm} GPM")
             
             if gpm >= 12.0:
                 st.balloons()
-                st.success("👑 **STATISTICAL SAVANT!** Your pace is historic! You are naming Hall of Famers faster than an auctioneer. Pure elite recall memory.")
+                st.success("👑 **STATISTICAL SAVANT!** Your pace is historic! Pure elite recall memory.")
             elif gpm >= 7.0:
-                st.success("🔥 **ALL-STAR PACE!** Outstanding speed! Your basketball database knowledge is deep and your fingers were flying.")
+                st.success("🔥 **ALL-STAR PACE!** Outstanding speed! Your basketball knowledge is deep.")
             elif gpm >= 3.5:
-                st.warning("💪 **SOLID ROTATION PLAYER!** Respectable hustle! You maintained a steady pace, but ran out of steam or hit a memory wall.")
+                st.warning("💪 **SOLID ROTATION PLAYER!** Respectable hustle! You maintained a steady pace.")
             else:
-                st.error("🧱 **BENCHWARMER COMPOSURE.** Oof, a bit sluggish out there. You spent a lot of time on the bench thinking. Review the tape and try a faster game!")
+                st.error("🧱 **BENCHWARMER COMPOSURE.** Oof, a bit sluggish out there. Review the tape and try a faster game!")
 
             with st.expander("👀 Review the ones you missed:"):
                 missed = [p for p in hof_master_list if p not in st.session_state.hof_correct_guesses]
@@ -322,9 +332,10 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
         else:
             st.write(f"### Score: **{len(st.session_state.hof_correct_guesses)}** Players Named")
             
+            # Form actions update state variables locally; manual st.rerun removed to ensure form stability
             with st.form("hof_entry_form", clear_on_submit=True):
                 user_input = st.text_input("Type a player name and press enter:", placeholder="e.g. Larry Bird, Magic Johnson...")
-                submit_name = st.form_submit_button("Submit Name")
+                submit_name = st.form_submit_button("Submit Name", use_container_width=True)
                 
             if submit_name and user_input.strip() != "":
                 raw_guess = user_input.strip()
@@ -338,7 +349,6 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
                         st.toast(f"⚠️ You already named {best_match}!", icon="👀")
                 else:
                     st.toast(f"❌ '{raw_guess}' didn't match any HOF players.", icon="🧱")
-                st.rerun()
 
             if st.session_state.hof_correct_guesses:
                 st.write("### 📝 Your Confirmed Hall of Famers:")
@@ -348,6 +358,7 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
 # BRANCH D: REGULAR TIMELINE LIST GAME MODES
 # ==========================================
 else:
+    # Aggressive JavaScript timed scroll override execution block
     st.components.v1.html(
         "<script>setTimeout(function(){window.parent.scrollTo({top:0,left:0,behavior:'instant'});window.scrollTo({top:0,left:0,behavior:'instant'});document.documentElement.scrollTop=0;document.body.scrollTop=0;},100);</script>", 
         height=0, width=0
@@ -367,6 +378,7 @@ else:
         st.write(f"### Attempt {st.session_state.attempts}/3")
         user_guesses = {}
         
+        # Split layout data items into rows containing up to 4 columns side by side
         rows_data = [filtered_df[i:i + 4] for i in range(0, len(filtered_df), 4)]
         
         for row_chunk in rows_data:
@@ -407,6 +419,7 @@ else:
             st.session_state.game_over = True
         st.rerun()
 
+    # Score Overview Render Grid
     if st.session_state.feedback:
         total_items = len(st.session_state.feedback)
         correct_count = sum(1 for v in st.session_state.feedback.values() if v is True)
