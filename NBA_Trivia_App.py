@@ -127,7 +127,7 @@ if active_selection != "🏠 HOME SCREEN":
             if remaining <= 0:
                 st.session_state.time_expired = True
                 st.session_state.game_over = True
-                st.parent_rerun()
+                st.rerun()
                 
             mins, secs = divmod(remaining, 60)
             placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
