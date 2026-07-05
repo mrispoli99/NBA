@@ -64,19 +64,21 @@ game_modes = {
 if "nav_state" not in st.session_state:
     st.session_state.nav_state = "🏠 HOME SCREEN"
 
-def sync_navigation():
-    st.session_state.nav_state = st.session_state.sidebar_widget_key
+# Look up the correct integer index matching our current session state text string
+modes_list = list(game_modes.keys())
+current_idx = modes_list.index(st.session_state.nav_state)
 
 st.sidebar.title("🎮 Main Navigation")
 selected_game = st.sidebar.radio(
     "Go to:", 
-    options=list(game_modes.keys()), 
-    key="sidebar_widget_key",
-    on_change=sync_navigation
+    options=modes_list, 
+    index=current_idx
 )
 
-if st.session_state.sidebar_widget_key != st.session_state.nav_state:
-    st.session_state.sidebar_widget_key = st.session_state.nav_state
+# If the user manually clicks a sidebar choice, sync our tracking key state
+if selected_game != st.session_state.nav_state:
+    st.session_state.nav_state = selected_game
+    st.rerun()
 
 active_selection = st.session_state.nav_state
 game_cfg = game_modes[active_selection]
