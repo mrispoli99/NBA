@@ -3,10 +3,13 @@ import pandas as pd
 import os
 import time
 import random
+from thefuzz import process
 
 st.set_page_config(page_title="NBA Complete Trivia Arena", layout="centered")
 
-# 1. LOAD DATA ENGINE
+# ==========================================
+# 1. CORE DATA LOADING ENGINE
+# ==========================================
 @st.cache_data
 def load_game_data():
     csv_path = "nba_trivia_data.csv"
@@ -26,15 +29,26 @@ def load_game_data():
     ]
     return df, sorted([p for p in all_players if p.lower() not in ['nan', 'n/a', '']]), global_teams
 
+@st.cache_data
+def load_hof_list():
+    if os.path.exists("nba_hof_players.csv"):
+        return pd.read_csv("nba_hof_players.csv")['HOF_Player'].tolist()
+    return []
+
 df, global_players, global_teams = load_game_data()
+hof_master_list = load_hof_list()
+
 if df is None or df.empty:
-    st.error("⚠️ 'nba_trivia_data.csv' not found. Run 'build_nba_data.py' first.")
+    st.error("⚠️ 'nba_trivia_data.csv' not found. Please run your scraper script first.")
     st.stop()
 
+# ==========================================
 # 2. DEFINE MAPS FOR THE GAME MODES
+# ==========================================
 game_modes = {
     "🏠 HOME SCREEN": {"col": "NONE", "type": "meta", "start_year": 0},
     "⚡ LIGHTNING RAPID FIRE": {"col": "SPECIAL", "type": "mixed", "start_year": 1948},
+    "🏛️ HOF NAMING SPRINT": {"col": "HOF", "type": "text_sprint", "start_year": 0},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
     "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
@@ -46,34 +60,28 @@ game_modes = {
     "NBA Rebound leader": {"col": "Rebound Leader", "type": "player", "start_year": 1951, "limited_options": True}
 }
 
-# --- FIX: ROBUST STATE ROUTING OVERLAY ---
-# Initialize the state variable if it's the user's first visit
+# --- TWO-WAY NAVIGATION CONTROLLER SYSTEM ---
 if "nav_state" not in st.session_state:
     st.session_state.nav_state = "🏠 HOME SCREEN"
 
-# Look up the current position index matching our session state text string
-modes_list = list(game_modes.keys())
-current_idx = modes_list.index(st.session_state.nav_state)
+def sync_navigation():
+    st.session_state.nav_state = st.session_state.sidebar_widget_key
 
-# Draw the sidebar radio button using a dynamic index pointer. 
-# We do not map a custom widget 'key' to avoid read-only session state deadlocks.
 st.sidebar.title("🎮 Main Navigation")
 selected_game = st.sidebar.radio(
     "Go to:", 
-    options=modes_list, 
-    index=current_idx
+    options=list(game_modes.keys()), 
+    key="sidebar_widget_key",
+    on_change=sync_navigation
 )
 
-# If the user clicks a sidebar choice manually, sync our tracking key state
-if selected_game != st.session_state.nav_state:
-    st.session_state.nav_state = selected_game
-    st.rerun()
+if st.session_state.sidebar_widget_key != st.session_state.nav_state:
+    st.session_state.sidebar_widget_key = st.session_state.nav_state
 
-# Establish game active structures
 active_selection = st.session_state.nav_state
 game_cfg = game_modes[active_selection]
 
-# Reset configuration counters upon changing active view targets
+# --- RESET STATE WHEN SWITCHING GAME MODES ---
 if "active_game" not in st.session_state or st.session_state.active_game != active_selection:
     st.session_state.active_game = active_selection
     st.session_state.attempts = 0
@@ -81,6 +89,7 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.feedback = {}
     st.session_state.start_time = None  
     st.session_state.time_expired = False
+    # Lightning mode states
     st.session_state.lt_started = False
     st.session_state.lt_chosen_metrics = []
     st.session_state.lt_max_questions = 30  
@@ -88,29 +97,32 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.lt_total = 0
     st.session_state.lt_current_q = None
     st.session_state.lt_last_feedback = ""
+    # HOF Sprint states
+    st.session_state.hof_started = False
+    st.session_state.hof_duration_mins = 5
+    st.session_state.hof_correct_guesses = []
 
-# Add Home button header to active game modes
+# Global Timer Renderer
 if active_selection != "🏠 HOME SCREEN":
-    if st.button("🏡 Return to Home Screen", key="global_home_btn"):
-        st.session_state.nav_state = "🏠 HOME SCREEN"
-        st.rerun()
-        
-    st.title(f"🏆 {active_selection}")
     timer_placeholder = st.empty()
 
     @st.fragment(run_every=1.0)
     def render_live_timer():
         if st.session_state.start_time is not None and not st.session_state.game_over:
             elapsed = time.time() - st.session_state.start_time
-            remaining = max(0, 420 - int(elapsed))
+            # Set time ceiling dynamically based on mode context
+            max_seconds = st.session_state.hof_duration_mins * 60 if active_selection == "🏛️ HOF NAMING SPRINT" else 420
+            remaining = max(0, max_seconds - int(elapsed))
+            
             if remaining <= 0:
                 st.session_state.time_expired = True
                 st.session_state.game_over = True
                 st.parent_rerun()
+                
             mins, secs = divmod(remaining, 60)
             timer_placeholder.error(f"⏱️ **TIME REMAINING: {mins}:{secs:02d}**")
         elif st.session_state.game_over and st.session_state.time_expired:
-            timer_placeholder.error("⏰ TIME EXPIRED! The 7-minute limit was reached.")
+            timer_placeholder.error("⏰ TIME EXPIRED! See your final stats below.")
 
     render_live_timer()
 
@@ -141,61 +153,53 @@ if active_selection == "🏠 HOME SCREEN":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("⚡ Lightning Rapid Fire")
+        st.subheader("⚡ Lightning Rapid Fire & Sprints")
         st.write("""
-        * **The Vibe:** Arcade style flashcards.
-        * **The Rules:** Pick metric pools, select your question ceiling, and face random prompts one-by-one.
-        * **The Catch:** View instant feedback and move to the next card against a **7-minute timer**.
+        * **Rapid Fire Blitz:** Custom-filter trivia pools to face a quick 25-50 random card session.
+        * ** Naismith HOF Sprint:** Race against a 3, 5, 7, or 9-minute buzzer to text-input as many Hall of Fame players as you can recall with smart typo leniency!
         """)
-        if st.button("🚀 Launch Lightning Mode", use_container_width=True):
-            st.session_state.nav_state = "⚡ LIGHTNING RAPID FIRE"
-            st.rerun()
+        s_btn1, s_btn2 = st.columns(2)
+        with s_btn1:
+            if st.button("⚡ Launch Lightning", use_container_width=True):
+                st.session_state.nav_state = "⚡ LIGHTNING RAPID FIRE"
+                st.rerun()
+        with s_btn2:
+            if st.button("🏛️ Launch HOF Sprint", use_container_width=True):
+                st.session_state.nav_state = "🏛️ HOF NAMING SPRINT"
+                st.rerun()
         
     with col2:
         st.subheader("📋 Chronological Timeline Lists")
         st.write("""
-        * **The Vibe:** Deep history marathons.
-        * **The Rules:** Select an individual stat line to view its complete historical timeline sequence list down the page.
-        * **The Catch:** Submit answers all at once. You get **3 attempts** to fix errors before answers reveal, capped by a **7-minute timer**.
+        * **The Vibe:** Complete, deep-history grid charts.
+        * **The Rules:** Select an individual category line. Fill out the multi-column historical grid table and submit your answers all at once.
+        * **The Catch:** You get **3 attempts** to fix errors before answers reveal, capped by a **7-minute timer**.
         """)
         
     st.write("---")
     st.write("### 📋 Launch a Historical Timeline Category List:")
-    
     b_col1, b_col2, b_col3 = st.columns(3)
-    
     with b_col1:
         if st.button("🏅 Regular Season MVP", use_container_width=True):
-            st.session_state.nav_state = "NBA MVP"
-            st.rerun()
+            st.session_state.nav_state = "NBA MVP"; st.rerun()
         if st.button("🥇 Finals MVP", use_container_width=True):
-            st.session_state.nav_state = "NBA Finals MVP"
-            st.rerun()
+            st.session_state.nav_state = "NBA Finals MVP"; st.rerun()
         if st.button("🛡️ Defensive Player (DPOY)", use_container_width=True):
-            st.session_state.nav_state = "NBA defensive player of the year"
-            st.rerun()
-
+            st.session_state.nav_state = "NBA defensive player of the year"; st.rerun()
     with b_col2:
         if st.button("🏆 Finals Champion", use_container_width=True):
-            st.session_state.nav_state = "NBA finals winner"
-            st.rerun()
+            st.session_state.nav_state = "NBA finals winner"; st.rerun()
         if st.button("🥈 Finals Runner Up", use_container_width=True):
-            st.session_state.nav_state = "NBA finals runner up"
-            st.rerun()
+            st.session_state.nav_state = "NBA finals runner up"; st.rerun()
         if st.button("👶 Rookie of the Year", use_container_width=True):
-            st.session_state.nav_state = "NBA Rookie of the year"
-            st.rerun()
-
+            st.session_state.nav_state = "NBA Rookie of the year"; st.rerun()
     with b_col3:
         if st.button("🎯 Scoring Leader (PPG)", use_container_width=True):
-            st.session_state.nav_state = "NBA Scoring leader"
-            st.rerun()
+            st.session_state.nav_state = "NBA Scoring leader"; st.rerun()
         if st.button("🪄 Assists Leader (APG)", use_container_width=True):
-            st.session_state.nav_state = "NBA Assists leader"
-            st.rerun()
+            st.session_state.nav_state = "NBA Assists leader"; st.rerun()
         if st.button("🪂 Rebound Leader (RPG)", use_container_width=True):
-            st.session_state.nav_state = "NBA Rebound leader"
-            st.rerun()
+            st.session_state.nav_state = "NBA Rebound leader"; st.rerun()
 
 # ==========================================
 # BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
@@ -205,7 +209,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN"]]
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT"]]
         chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
         chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
@@ -269,34 +273,89 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
                 st.markdown(st.session_state.lt_last_feedback)
 
 # ==========================================
-# BRANCH C: REGULAR TIMELINE LIST GAME MODES
+# BRANCH C: HALL OF FAME NAMING SPRINT
 # ==========================================
+elif active_selection == "🏛️ HOF NAMING SPRINT":
+    if not st.session_state.hof_started:
+        st.write("### 🏛️ Naismith Hall of Fame Naming Sprint")
+        st.markdown("How many NBA Hall of Fame players can you name before the buzzer sounds? Type names one by one. Spelling counts, but our engine is smart enough to accept close typos!")
+        
+        chosen_mins = st.selectbox("Select Sprint Duration:", options=[3, 5, 7, 9], index=1)
+        
+        if st.button("🏁 Start Sprint Round", use_container_width=True):
+            st.session_state.hof_duration_mins = chosen_mins
+            st.session_state.hof_started = True
+            st.session_state.start_time = time.time()
+            st.session_state.hof_correct_guesses = []
+            st.rerun()
+    else:
+        elapsed = time.time() - st.session_state.start_time
+        max_sec = st.session_state.hof_duration_mins * 60
+        if elapsed >= max_sec:
+            st.session_state.game_over = True
+
+        if st.session_state.game_over:
+            st.write("---")
+            st.subheader("🏁 Sprint Complete!")
+            count = len(st.session_state.hof_correct_guesses)
+            mins_selected = st.session_state.hof_duration_mins
+            
+            # --- COMPUTE DURATION-ADJUSTED PACING PERFORMANCE MATRIX ---
+            gpm = round(count / mins_selected, 1) # Guesses Per Minute (GPM)
+            
+            st.info(f"**Final Score:** {count} Players Named in {mins_selected} Minutes")
+            st.metric(label="Your Typing Velocity (Guesses Per Minute)", value=f"{gpm} GPM")
+            
+            if gpm >= 12.0:
+                st.balloons()
+                st.success("👑 **STATISTICAL SAVANT!** Your pace is historic! You are naming Hall of Famers faster than an auctioneer. Pure elite recall memory.")
+            elif gpm >= 7.0:
+                st.success("🔥 **ALL-STAR PACE!** Outstanding speed! Your basketball database knowledge is deep and your fingers were flying.")
+            elif gpm >= 3.5:
+                st.warning("💪 **SOLID ROTATION PLAYER!** Respectable hustle! You maintained a steady pace, but ran out of steam or hit a memory wall.")
+            else:
+                st.error("🧱 **BENCHWARMER COMPOSURE.** Oof, a bit sluggish out there. You spent a lot of time on the bench thinking. Review the tape and try a faster game!")
+
+            with st.expander("👀 Review the ones you missed:"):
+                missed = [p for p in hof_master_list if p not in st.session_state.hof_correct_guesses]
+                st.write(", ".join(sorted(missed)))
+        else:
+            st.write(f"### Score: **{len(st.session_state.hof_correct_guesses)}** Players Named")
+            
+            with st.form("hof_entry_form", clear_on_submit=True):
+                user_input = st.text_input("Type a player name and press enter:", placeholder="e.g. Larry Bird, Magic Johnson...")
+                submit_name = st.form_submit_button("Submit Name")
+                
+            if submit_name and user_input.strip() != "":
+                raw_guess = user_input.strip()
+                best_match, score = process.extractOne(raw_guess, hof_master_list)
+                
+                if score >= 85:
+                    if best_match not in st.session_state.hof_correct_guesses:
+                        st.session_state.hof_correct_guesses.append(best_match)
+                        st.toast(f"✅ Confirmed: {best_match} ({score}% match)", icon="🔥")
+                    else:
+                        st.toast(f"⚠️ You already named {best_match}!", icon="👀")
+                else:
+                    st.toast(f"❌ '{raw_guess}' didn't match any HOF players.", icon="🧱")
+                st.rerun()
+
+            if st.session_state.hof_correct_guesses:
+                st.write("### 📝 Your Confirmed Hall of Famers:")
+                st.write(", ".join(st.session_state.hof_correct_guesses))
+
 # ==========================================
-# BRANCH C: REGULAR TIMELINE LIST GAME MODES
+# BRANCH D: REGULAR TIMELINE LIST GAME MODES
 # ==========================================
 else:
-    # --- FIXED: MOBILE-AGGRESSIVE TIMED SCROLL RESET ---
     st.components.v1.html(
-        """
-        <script>
-            setTimeout(function() {
-                // Target the main parent container (Streamlit Cloud app frames)
-                window.parent.scrollTo({top: 0, left: 0, behavior: 'instant'});
-                // Fallback direct overrides for mobile Safari/Chrome viewport wrappers
-                window.scrollTo({top: 0, left: 0, behavior: 'instant'});
-                document.documentElement.scrollTop = 0;
-                document.body.scrollTop = 0;
-            }, 100); // 100ms delay ensures elements are loaded before snapping up
-        </script>
-        """, 
-        height=0, 
-        width=0
+        "<script>setTimeout(function(){window.parent.scrollTo({top:0,left:0,behavior:'instant'});window.scrollTo({top:0,left:0,behavior:'instant'});document.documentElement.scrollTop=0;document.body.scrollTop=0;},100);</script>", 
+        height=0, width=0
     )
 
     if st.session_state.start_time is None:
         st.session_state.start_time = time.time()
 
-    # Create local immutable copies of configurations to prevent variable scoping drop out inside chunks
     local_start_year = game_cfg["start_year"]
     local_target_col = str(game_cfg["col"])
     local_game_type = game_cfg["type"]
@@ -308,16 +367,12 @@ else:
         st.write(f"### Attempt {st.session_state.attempts}/3")
         user_guesses = {}
         
-        # Split history into 4-column balanced layout rows
         rows_data = [filtered_df[i:i + 4] for i in range(0, len(filtered_df), 4)]
         
         for row_chunk in rows_data:
             cols = st.columns(4)
-            
             for index, (idx, row) in enumerate(row_chunk.iterrows()):
                 year = int(row['Year'])
-                
-                # FIX: Access variables explicitly using local immutable references
                 if local_limited:
                     past_winners = df[(df['Year'] <= year) & (df['Year'] >= local_start_year)].sort_values(by="Year", ascending=False)
                     dropdown_options = sorted(list(past_winners[local_target_col].astype(str).unique()[:5]))
@@ -326,12 +381,8 @@ else:
                 
                 with cols[index]:
                     guess = st.selectbox(
-                        f"Year {year}", 
-                        options=dropdown_options, 
-                        index=None,
-                        placeholder="Choose...", 
-                        key=f"{active_selection}_{year}_{idx}", 
-                        disabled=st.session_state.game_over
+                        f"Year {year}", options=dropdown_options, index=None,
+                        placeholder="Choose...", key=f"{active_selection}_{year}_{idx}", disabled=st.session_state.game_over
                     )
                     user_guesses[year] = guess or ""
             
@@ -356,7 +407,6 @@ else:
             st.session_state.game_over = True
         st.rerun()
 
-    # Score Overview Render
     if st.session_state.feedback:
         total_items = len(st.session_state.feedback)
         correct_count = sum(1 for v in st.session_state.feedback.values() if v is True)
@@ -373,7 +423,6 @@ else:
                 year = int(row['Year'])
                 actual = str(row[local_target_col])
                 is_ok = st.session_state.feedback.get(year, False)
-                
                 with f_cols[f_index]:
                     if is_ok:
                         st.markdown(f"✅ **{year}:** Correct")
