@@ -35,8 +35,16 @@ def load_hof_list():
         return pd.read_csv("nba_hof_players.csv")['HOF_Player'].tolist()
     return []
 
+@st.cache_data
+def load_player_metadata():
+    if os.path.exists("nba_player_metadata.csv"):
+        pmdf = pd.read_csv("nba_player_metadata.csv").fillna("N/A")
+        return pmdf, pmdf['Player'].tolist()
+    return pd.DataFrame(), []
+
 df, global_players, global_teams = load_game_data()
 hof_master_list = load_hof_list()
+player_meta_df, player_meta_master_list = load_player_metadata()
 
 if df is None or df.empty:
     st.error("⚠️ 'nba_trivia_data.csv' not found. Please run your scraper script first.")
@@ -49,6 +57,7 @@ game_modes = {
     "🏠 HOME SCREEN": {"col": "NONE", "type": "meta", "start_year": 0},
     "⚡ LIGHTNING RAPID FIRE": {"col": "SPECIAL", "type": "mixed", "start_year": 1948},
     "🏛️ HOF NAMING SPRINT": {"col": "HOF", "type": "text_sprint", "start_year": 0},
+    "🔍 PLAYER ID LIGHTNING": {"col": "PLAYER_META", "type": "text_sprint", "start_year": 0},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
     "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
@@ -103,6 +112,14 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.hof_started = False
     st.session_state.hof_duration_mins = 5
     st.session_state.hof_correct_guesses = []
+    # Player ID Lightning state variables
+    st.session_state.pid_started = False
+    st.session_state.pid_max_questions = 15
+    st.session_state.pid_correct = 0
+    st.session_state.pid_total = 0
+    st.session_state.pid_queue = []
+    st.session_state.pid_current_q = None
+    st.session_state.pid_last_feedback = ""
 
 # ==========================================
 # 3. GLOBAL ENCAPSULATED TIMER FRAME
@@ -188,8 +205,9 @@ if active_selection == "🏠 HOME SCREEN":
         st.write("""
         * **Rapid Fire Blitz:** Custom-filter trivia pools to face a quick 25-50 random card session.
         * **Naismith HOF Sprint:** Race against a 3, 5, 7, or 9-minute buzzer to text-input as many Hall of Fame players as you can recall with smart typo leniency!
+        * **Player ID Lightning:** We show you a player's career stat line, teams, and accolades — you type the name before time's up!
         """)
-        s_btn1, s_btn2 = st.columns(2)
+        s_btn1, s_btn2, s_btn3 = st.columns(3)
         with s_btn1:
             if st.button("⚡ Launch Lightning", use_container_width=True):
                 st.session_state.nav_state = "⚡ LIGHTNING RAPID FIRE"
@@ -197,6 +215,10 @@ if active_selection == "🏠 HOME SCREEN":
         with s_btn2:
             if st.button("🏛️ Launch HOF Sprint", use_container_width=True):
                 st.session_state.nav_state = "🏛️ HOF NAMING SPRINT"
+                st.rerun()
+        with s_btn3:
+            if st.button("🔍 Launch Player ID", use_container_width=True):
+                st.session_state.nav_state = "🔍 PLAYER ID LIGHTNING"
                 st.rerun()
         
     with col2:
@@ -240,7 +262,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT"]]
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING"]]
         chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
         chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
@@ -303,6 +325,87 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
                 
             if st.session_state.lt_last_feedback:
                 st.markdown(st.session_state.lt_last_feedback)
+
+# ==========================================
+# BRANCH B2: PLAYER ID LIGHTNING
+# ==========================================
+elif active_selection == "🔍 PLAYER ID LIGHTNING":
+    if player_meta_df.empty:
+        st.warning("⚠️ 'nba_player_metadata.csv' not found. Run the updated build_nba_data.py scraper (scrape_player_metadata step) to generate it, then reload the app.")
+    elif not st.session_state.pid_started:
+        st.write("### 🔍 Player ID Lightning")
+        st.markdown("We'll show you a player's career stat line, teams, and accolades — no name attached. Type who you think it is before time runs out!")
+
+        chosen_limit = st.selectbox("Number of players to identify:", options=[10, 15, 20, 25], index=1)
+
+        if st.button("🚀 Start Player ID Round", use_container_width=True):
+            pool_size = len(player_meta_df)
+            k = min(chosen_limit, pool_size)
+            st.session_state.pid_queue = random.sample(range(pool_size), k=k)
+            st.session_state.pid_max_questions = k
+            st.session_state.pid_started = True
+            st.session_state.pid_correct = 0
+            st.session_state.pid_total = 0
+            st.session_state.pid_current_q = None
+            st.session_state.pid_last_feedback = ""
+            st.session_state.start_time = time.time()
+            st.rerun()
+    else:
+        if st.session_state.pid_total >= st.session_state.pid_max_questions:
+            st.session_state.game_over = True
+
+        if st.session_state.game_over:
+            render_grading_message(st.session_state.pid_correct, st.session_state.pid_total)
+        else:
+            if st.session_state.pid_current_q is None:
+                next_idx = st.session_state.pid_queue.pop(0)
+                st.session_state.pid_current_q = player_meta_df.iloc[next_idx].to_dict()
+
+            q = st.session_state.pid_current_q
+            st.subheader(f"Player {st.session_state.pid_total + 1} of {st.session_state.pid_max_questions}")
+
+            info_col1, info_col2 = st.columns(2)
+            with info_col1:
+                st.markdown(f"**Position:** {q.get('Position', 'N/A')}")
+                st.markdown(f"**Years Active:** {q.get('Years_Active', 'N/A')}")
+                st.markdown(f"**Teams:** {q.get('Teams', 'N/A')}")
+            with info_col2:
+                st.markdown(f"**Career PPG:** {q.get('PPG', 'N/A')}")
+                st.markdown(f"**Career RPG:** {q.get('RPG', 'N/A')}")
+                st.markdown(f"**Career APG:** {q.get('APG', 'N/A')}")
+
+            accolade_bits = []
+            for label, key in [("MVP", "MVP_Count"), ("DPOY", "DPOY_Count"), ("Finals MVP", "FMVP_Count"), ("ROY", "ROY_Count")]:
+                count = q.get(key, 0)
+                try:
+                    count = int(count)
+                except (TypeError, ValueError):
+                    count = 0
+                if count > 0:
+                    accolade_bits.append(f"{count}x {label}")
+            if str(q.get("Accolades", "")).strip() not in ("", "N/A", "nan"):
+                accolade_bits.append(str(q["Accolades"]))
+            if accolade_bits:
+                st.info("🏅 " + " • ".join(accolade_bits))
+
+            with st.form("pid_entry_form", clear_on_submit=True):
+                user_guess = st.text_input("Who is this player?", placeholder="Type a full name and press enter...")
+                submit_guess = st.form_submit_button("Submit Guess", use_container_width=True)
+
+            if submit_guess and user_guess.strip() != "":
+                raw_guess = user_guess.strip()
+                best_match, score = process.extractOne(raw_guess, [q["Player"]])
+                st.session_state.pid_total += 1
+                if score >= 85:
+                    st.session_state.pid_correct += 1
+                    st.session_state.pid_last_feedback = f"✅ **Correct!** It was *{q['Player']}*."
+                else:
+                    st.session_state.pid_last_feedback = f"❌ **Incorrect.** You guessed *{raw_guess}*. It was *{q['Player']}*."
+                st.session_state.pid_current_q = None
+                st.rerun()
+
+            if st.session_state.pid_last_feedback:
+                st.markdown(st.session_state.pid_last_feedback)
 
 # ==========================================
 # BRANCH C: HALL OF FAME NAMING SPRINT
