@@ -84,6 +84,7 @@ game_modes = {
     "🏛️ HOF NAMING SPRINT": {"col": "HOF", "type": "text_sprint", "start_year": 0},
     "🔍 PLAYER ID LIGHTNING": {"col": "PLAYER_META", "type": "text_sprint", "start_year": 0},
     "🕵️ MYSTERY ROSTER": {"col": "ROSTER", "type": "text_sprint", "start_year": 0},
+    "📋 ROSTER RECALL LIGHTNING": {"col": "ROSTER_RECALL", "type": "text_sprint", "start_year": 0},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
     "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
@@ -154,6 +155,13 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.mr_final_score = None
     st.session_state.mr_last_feedback = ""
     st.session_state.mr_forced_reveals = 0
+    # Roster Recall Lightning state variables
+    st.session_state.rr_started = False
+    st.session_state.rr_decade = None
+    st.session_state.rr_target = None
+    st.session_state.rr_correct_guesses = []
+    st.session_state.rr_last_feedback = ""
+
 
 # ==========================================
 # 3. GLOBAL ENCAPSULATED TIMER FRAME
@@ -176,6 +184,8 @@ if active_selection != "🏠 HOME SCREEN":
             max_seconds = st.session_state.hof_duration_mins * 60
         elif active_selection == "🕵️ MYSTERY ROSTER":
             max_seconds = 300
+        elif active_selection == "📋 ROSTER RECALL LIGHTNING":
+            max_seconds = 120
         else:
             max_seconds = 420
         remaining = max(0, max_seconds - int(elapsed))
@@ -246,8 +256,9 @@ if active_selection == "🏠 HOME SCREEN":
         * **Naismith HOF Sprint:** Race against a 3, 5, 7, or 9-minute buzzer to text-input as many Hall of Fame players as you can recall with smart typo leniency!
         * **Player ID Lightning:** We show you a player's career stat line, teams, and accolades — you type the name before time's up!
         * **Mystery Roster:** Pick a decade — we reveal a real team's roster one player at a time, bench guys first. Guess the team & year before the clock runs out!
+        * **Roster Recall Lightning:** Pick a decade — we lock in a real team and year. Name as many players from that roster as you can in 2 minutes!
         """)
-        s_btn1, s_btn2, s_btn3, s_btn4 = st.columns(4)
+        s_btn1, s_btn2, s_btn3 = st.columns(3)
         with s_btn1:
             if st.button("⚡ Launch Lightning", use_container_width=True):
                 st.session_state.nav_state = "⚡ LIGHTNING RAPID FIRE"
@@ -260,9 +271,14 @@ if active_selection == "🏠 HOME SCREEN":
             if st.button("🔍 Launch Player ID", use_container_width=True):
                 st.session_state.nav_state = "🔍 PLAYER ID LIGHTNING"
                 st.rerun()
+        s_btn4, s_btn5 = st.columns(2)
         with s_btn4:
             if st.button("🕵️ Launch Mystery Roster", use_container_width=True):
                 st.session_state.nav_state = "🕵️ MYSTERY ROSTER"
+                st.rerun()
+        with s_btn5:
+            if st.button("📋 Launch Roster Recall", use_container_width=True):
+                st.session_state.nav_state = "📋 ROSTER RECALL LIGHTNING"
                 st.rerun()
         
     with col2:
@@ -306,7 +322,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER"]]
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER", "📋 ROSTER RECALL LIGHTNING"]]
         chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
         chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
@@ -556,6 +572,96 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
 
             if st.session_state.mr_last_feedback:
                 st.markdown(st.session_state.mr_last_feedback)
+
+# ==========================================
+# BRANCH B4: ROSTER RECALL LIGHTNING
+# ==========================================
+elif active_selection == "📋 ROSTER RECALL LIGHTNING":
+    if decade_rosters_df.empty:
+        st.warning("⚠️ 'nba_decade_rosters.csv' not found. Run the updated build_nba_data.py scraper (scrape_decade_rosters step) to generate it, then reload the app.")
+    elif not st.session_state.rr_started:
+        st.write("### 📋 Roster Recall Lightning")
+        st.markdown("""
+        Pick a decade. We'll lock in a real NBA team from a specific season — you
+        won't be told which players are on it. You have **2 minutes** to name as
+        many players from that roster as you can, with typo-tolerant matching.
+        1 point per correct, unique name. Unlimited guesses — go fast!
+        """)
+
+        available_decades = sorted(decade_rosters_df['Decade'].unique().tolist())
+        chosen_decade = st.selectbox("Choose a decade:", options=available_decades, key="rr_decade_select")
+
+        if st.button("🚀 Start Roster Recall", use_container_width=True):
+            pool = decade_rosters_df[decade_rosters_df['Decade'] == chosen_decade]
+            target_row = pool.sample(1).iloc[0]
+            st.session_state.rr_decade = chosen_decade
+            st.session_state.rr_target = {
+                "Team": target_row["Team"],
+                "TeamFull": target_row["TeamFull"],
+                "Year": int(target_row["Year"]),
+                "PlayerOrder": [p for p in str(target_row["PlayerOrder"]).split("|") if p],
+            }
+            st.session_state.rr_started = True
+            st.session_state.rr_correct_guesses = []
+            st.session_state.rr_last_feedback = ""
+            st.session_state.game_over = False
+            st.session_state.time_expired = False
+            st.session_state.start_time = time.time()
+            st.rerun()
+    else:
+        target = st.session_state.rr_target
+        roster = target["PlayerOrder"]
+
+        if st.session_state.game_over:
+            st.write("---")
+            st.subheader("🏁 Roster Recall Result")
+            score = len(st.session_state.rr_correct_guesses)
+            total = len(roster)
+            st.info(f"The roster was the **{target['Year']} {target['TeamFull']}**.")
+            st.metric(label="Players Named", value=f"{score} / {total}")
+
+            pct = (score / total) if total else 0
+            if pct >= 0.75:
+                st.balloons()
+                st.success("👑 **ROSTER MASTER!** Incredible recall on that squad.")
+            elif pct >= 0.5:
+                st.success("🔥 **STRONG SQUAD KNOWLEDGE!** Nicely done.")
+            elif pct >= 0.25:
+                st.warning("👍 **DECENT EFFORT.** You got a good chunk of them.")
+            else:
+                st.error("🧊 **COLD START.** That roster stumped you a bit!")
+
+            missed = [p for p in roster if p not in st.session_state.rr_correct_guesses]
+            with st.expander(f"👀 Full roster ({total} players):"):
+                st.write("**✅ You got:** " + (", ".join(st.session_state.rr_correct_guesses) if st.session_state.rr_correct_guesses else "None"))
+                st.write("**❌ Missed:** " + (", ".join(missed) if missed else "None — you got them all!"))
+        else:
+            st.write(f"### Decade: {st.session_state.rr_decade}")
+            st.write(f"**Score: {len(st.session_state.rr_correct_guesses)} player(s) named**")
+            if st.session_state.rr_correct_guesses:
+                st.info(", ".join(st.session_state.rr_correct_guesses))
+
+            with st.form("rr_entry_form", clear_on_submit=True):
+                user_guess = st.text_input("Name a player on this roster:", placeholder="Type a full name and press enter...")
+                submit_guess = st.form_submit_button("Submit Name", use_container_width=True)
+
+            if submit_guess and user_guess.strip() != "":
+                raw_guess = user_guess.strip()
+                best_match, match_score = process.extractOne(raw_guess, roster) if roster else (None, 0)
+                if best_match and match_score >= 85:
+                    if best_match not in st.session_state.rr_correct_guesses:
+                        st.session_state.rr_correct_guesses.append(best_match)
+                        st.toast(f"✅ {best_match} ({match_score}% match)", icon="🔥")
+                        st.session_state.rr_last_feedback = f"✅ **{best_match}** confirmed!"
+                    else:
+                        st.toast(f"⚠️ You already named {best_match}!", icon="👀")
+                        st.session_state.rr_last_feedback = f"⚠️ You already named **{best_match}**."
+                else:
+                    st.toast(f"❌ '{raw_guess}' wasn't on this roster.", icon="🧱")
+                    st.session_state.rr_last_feedback = f"❌ '{raw_guess}' wasn't on this roster."
+
+            if st.session_state.rr_last_feedback:
+                st.markdown(st.session_state.rr_last_feedback)
 
 # ==========================================
 # BRANCH C: HALL OF FAME NAMING SPRINT
