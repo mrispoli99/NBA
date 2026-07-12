@@ -636,7 +636,8 @@ elif active_selection == "📋 ROSTER RECALL LIGHTNING":
                 st.write("**✅ You got:** " + (", ".join(st.session_state.rr_correct_guesses) if st.session_state.rr_correct_guesses else "None"))
                 st.write("**❌ Missed:** " + (", ".join(missed) if missed else "None — you got them all!"))
         else:
-            st.write(f"### Decade: {st.session_state.rr_decade}")
+            st.write(f"### {target['Year']} {target['TeamFull']}")
+            st.caption(f"Decade: {st.session_state.rr_decade}")
             st.write(f"**Score: {len(st.session_state.rr_correct_guesses)} player(s) named**")
             if st.session_state.rr_correct_guesses:
                 st.info(", ".join(st.session_state.rr_correct_guesses))
