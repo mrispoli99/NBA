@@ -42,10 +42,28 @@ def load_player_metadata():
         return pmdf, pmdf['Player'].tolist()
     return pd.DataFrame(), []
 
+# Fixes for team names that fell through the scraper's mapping before it was
+# extended (see TEAM_MAP in build_nba_data.py) -- applied here too so an
+# already-generated nba_decade_rosters.csv gets corrected without re-scraping.
+TEAM_NAME_FIXES = {
+    'Buffalo Braves': 'Braves', 'Capital Bullets': 'Bullets',
+    'Charlotte Bobcats': 'Bobcats', 'Charlotte Hornets': 'Hornets',
+    'Chicago Packers': 'Packers', 'Chicago Zephyrs': 'Zephyrs',
+    'Cincinnati Royals': 'Kings', 'Kansas City Kings': 'Kings', 'Kansas City-Omaha Kings': 'Kings',
+    'Los Angeles Clippers': 'Clippers', 'San Diego Clippers': 'Clippers',
+    'Memphis Grizzlies': 'Grizzlies', 'Vancouver Grizzlies': 'Grizzlies',
+    'Minnesota Timberwolves': 'Timberwolves',
+    'New Orleans Hornets': 'Hornets', 'New Orleans/Oklahoma City Hornets': 'Hornets',
+    'New Orleans Jazz': 'Jazz', 'New Orleans Pelicans': 'Pelicans',
+    'New York Nets': 'Nets', 'San Diego Rockets': 'Rockets', 'San Francisco Warriors': 'Warriors',
+}
+
 @st.cache_data
 def load_decade_rosters():
     if os.path.exists("nba_decade_rosters.csv"):
-        return pd.read_csv("nba_decade_rosters.csv").fillna("")
+        rdf = pd.read_csv("nba_decade_rosters.csv").fillna("")
+        rdf['Team'] = rdf['Team'].replace(TEAM_NAME_FIXES)
+        return rdf
     return pd.DataFrame()
 
 df, global_players, global_teams = load_game_data()
@@ -523,7 +541,8 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
                 with g_col1:
                     guess_year = st.selectbox("Year:", options=candidate_years, index=None, placeholder="Choose year...")
                 with g_col2:
-                    guess_team = st.selectbox("Team:", options=global_teams, index=None, placeholder="Choose team...")
+                    mr_team_options = sorted(decade_rosters_df['Team'].dropna().unique().tolist())
+                    guess_team = st.selectbox("Team:", options=mr_team_options, index=None, placeholder="Choose team...")
                 submit_guess = st.form_submit_button("Submit Guess", use_container_width=True)
 
             if submit_guess:
