@@ -445,9 +445,10 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
         Pick a decade. We'll reveal a real NBA team's roster one player at a time —
         starting with the deepest bench player (lowest minutes per game) and working
         up to the stars — one new name every 30 seconds, across a 5-minute clock.
-        Guess the **team and year** as many times as you like. The fewer players
-        revealed when you nail it, the more points you keep (starts at 10, minus
-        1 for every player revealed after the first).
+        You can also force the next name early at any time if you want more clues
+        sooner. Guess the **team and year** as many times as you like. The fewer
+        players revealed when you nail it, the more points you keep (starts at 20,
+        minus 1 for every player revealed after the first).
         """)
 
         available_decades = sorted(decade_rosters_df['Decade'].unique().tolist())
@@ -474,7 +475,7 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
         target = st.session_state.mr_target
         roster = target["PlayerOrder"]
         elapsed = time.time() - st.session_state.start_time
-        time_based_count = min(len(roster), 10, 1 + int(elapsed // 30)) if roster else 0
+        time_based_count = min(len(roster), 1 + int(elapsed // 30)) if roster else 0
         revealed_count = max(time_based_count, min(len(roster), st.session_state.mr_forced_reveals)) if roster else 0
 
         if st.session_state.game_over:
@@ -483,19 +484,19 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
             if st.session_state.mr_solved:
                 score = st.session_state.mr_final_score
                 st.info(f"**You solved it!** It was the **{target['Year']} {target['TeamFull']}**.")
-                st.metric(label="Points Earned", value=f"{score} / 10")
-                if score >= 9:
+                st.metric(label="Points Earned", value=f"{score} / 20")
+                if score >= 18:
                     st.balloons()
                     st.success("👑 **MASTER DETECTIVE!** You barely needed a clue.")
-                elif score >= 6:
+                elif score >= 12:
                     st.success("🔍 **SHARP EYE!** Great read on that roster.")
-                elif score >= 3:
+                elif score >= 6:
                     st.warning("👀 **DECENT READ.** You got there eventually.")
                 else:
                     st.error("🐢 **JUST IN TIME.** Down to the wire, but you got it!")
             else:
                 st.error(f"⏰ **Time's up!** The answer was the **{target['Year']} {target['TeamFull']}**.")
-                st.metric(label="Points Earned", value="0 / 10")
+                st.metric(label="Points Earned", value="0 / 20")
 
             with st.expander("👀 Full roster reveal order:"):
                 st.write(", ".join(roster) if roster else "No roster data.")
@@ -503,16 +504,16 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
             st.write(f"### Decade: {st.session_state.mr_decade}")
             st.write(f"**Players revealed so far ({revealed_count}):**")
             st.info(", ".join(roster[:revealed_count]) if roster else "No roster data available.")
-            st.caption(f"Current potential score if correct: **{max(0, 10 - (revealed_count - 1))} / 10**")
+            st.caption(f"Current potential score if correct: **{max(0, 20 - (revealed_count - 1))} / 20**")
 
             reveal_col1, reveal_col2 = st.columns(2)
             with reveal_col1:
                 if st.button("🔄 Check for New Reveal", use_container_width=True, help="Free — just syncs the display to however much time has actually passed."):
                     st.rerun()
             with reveal_col2:
-                next_reveal_possible = revealed_count < min(len(roster), 10)
+                next_reveal_possible = revealed_count < len(roster)
                 if st.button("👀 Reveal Next Player Now (-1 pt)", use_container_width=True, disabled=not next_reveal_possible, help="Forces the next player to show immediately, even if 30 seconds haven't passed."):
-                    st.session_state.mr_forced_reveals = min(len(roster), 10, revealed_count + 1)
+                    st.session_state.mr_forced_reveals = min(len(roster), revealed_count + 1)
                     st.rerun()
 
             candidate_years = sorted(decade_rosters_df[decade_rosters_df['Decade'] == st.session_state.mr_decade]['Year'].unique().tolist())
@@ -528,7 +529,7 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
             if submit_guess:
                 if guess_year == target["Year"] and guess_team == target["Team"]:
                     st.session_state.mr_solved = True
-                    st.session_state.mr_final_score = max(0, 10 - (revealed_count - 1))
+                    st.session_state.mr_final_score = max(0, 20 - (revealed_count - 1))
                     st.session_state.game_over = True
                     st.rerun()
                 else:
