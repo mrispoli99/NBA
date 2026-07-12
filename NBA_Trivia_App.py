@@ -42,9 +42,16 @@ def load_player_metadata():
         return pmdf, pmdf['Player'].tolist()
     return pd.DataFrame(), []
 
+@st.cache_data
+def load_decade_rosters():
+    if os.path.exists("nba_decade_rosters.csv"):
+        return pd.read_csv("nba_decade_rosters.csv").fillna("")
+    return pd.DataFrame()
+
 df, global_players, global_teams = load_game_data()
 hof_master_list = load_hof_list()
 player_meta_df, player_meta_master_list = load_player_metadata()
+decade_rosters_df = load_decade_rosters()
 
 if df is None or df.empty:
     st.error("⚠️ 'nba_trivia_data.csv' not found. Please run your scraper script first.")
@@ -58,6 +65,7 @@ game_modes = {
     "⚡ LIGHTNING RAPID FIRE": {"col": "SPECIAL", "type": "mixed", "start_year": 1948},
     "🏛️ HOF NAMING SPRINT": {"col": "HOF", "type": "text_sprint", "start_year": 0},
     "🔍 PLAYER ID LIGHTNING": {"col": "PLAYER_META", "type": "text_sprint", "start_year": 0},
+    "🕵️ MYSTERY ROSTER": {"col": "ROSTER", "type": "text_sprint", "start_year": 0},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
     "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
@@ -120,6 +128,13 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.pid_queue = []
     st.session_state.pid_current_q = None
     st.session_state.pid_last_feedback = ""
+    # Mystery Roster state variables
+    st.session_state.mr_started = False
+    st.session_state.mr_decade = None
+    st.session_state.mr_target = None
+    st.session_state.mr_solved = False
+    st.session_state.mr_final_score = None
+    st.session_state.mr_last_feedback = ""
 
 # ==========================================
 # 3. GLOBAL ENCAPSULATED TIMER FRAME
@@ -138,7 +153,12 @@ if active_selection != "🏠 HOME SCREEN":
     remaining = 0
     if st.session_state.start_time is not None and not st.session_state.game_over:
         elapsed = time.time() - st.session_state.start_time
-        max_seconds = st.session_state.hof_duration_mins * 60 if active_selection == "🏛️ HOF NAMING SPRINT" else 420
+        if active_selection == "🏛️ HOF NAMING SPRINT":
+            max_seconds = st.session_state.hof_duration_mins * 60
+        elif active_selection == "🕵️ MYSTERY ROSTER":
+            max_seconds = 300
+        else:
+            max_seconds = 420
         remaining = max(0, max_seconds - int(elapsed))
         if remaining <= 0:
             st.session_state.time_expired = True
@@ -206,8 +226,9 @@ if active_selection == "🏠 HOME SCREEN":
         * **Rapid Fire Blitz:** Custom-filter trivia pools to face a quick 25-50 random card session.
         * **Naismith HOF Sprint:** Race against a 3, 5, 7, or 9-minute buzzer to text-input as many Hall of Fame players as you can recall with smart typo leniency!
         * **Player ID Lightning:** We show you a player's career stat line, teams, and accolades — you type the name before time's up!
+        * **Mystery Roster:** Pick a decade — we reveal a real team's roster one player at a time, bench guys first. Guess the team & year before the clock runs out!
         """)
-        s_btn1, s_btn2, s_btn3 = st.columns(3)
+        s_btn1, s_btn2, s_btn3, s_btn4 = st.columns(4)
         with s_btn1:
             if st.button("⚡ Launch Lightning", use_container_width=True):
                 st.session_state.nav_state = "⚡ LIGHTNING RAPID FIRE"
@@ -219,6 +240,10 @@ if active_selection == "🏠 HOME SCREEN":
         with s_btn3:
             if st.button("🔍 Launch Player ID", use_container_width=True):
                 st.session_state.nav_state = "🔍 PLAYER ID LIGHTNING"
+                st.rerun()
+        with s_btn4:
+            if st.button("🕵️ Launch Mystery Roster", use_container_width=True):
+                st.session_state.nav_state = "🕵️ MYSTERY ROSTER"
                 st.rerun()
         
     with col2:
@@ -262,7 +287,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING"]]
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER"]]
         chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
         chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
@@ -406,6 +431,101 @@ elif active_selection == "🔍 PLAYER ID LIGHTNING":
 
             if st.session_state.pid_last_feedback:
                 st.markdown(st.session_state.pid_last_feedback)
+
+# ==========================================
+# BRANCH B3: MYSTERY ROSTER (DECADE GUESSING GAME)
+# ==========================================
+elif active_selection == "🕵️ MYSTERY ROSTER":
+    if decade_rosters_df.empty:
+        st.warning("⚠️ 'nba_decade_rosters.csv' not found. Run the updated build_nba_data.py scraper (scrape_decade_rosters step) to generate it, then reload the app.")
+    elif not st.session_state.mr_started:
+        st.write("### 🕵️ Mystery Roster")
+        st.markdown("""
+        Pick a decade. We'll reveal a real NBA team's roster one player at a time —
+        starting with the deepest bench player (lowest minutes per game) and working
+        up to the stars — one new name every 30 seconds, across a 5-minute clock.
+        Guess the **team and year** as many times as you like. The fewer players
+        revealed when you nail it, the more points you keep (starts at 10, minus
+        1 for every player revealed after the first).
+        """)
+
+        available_decades = sorted(decade_rosters_df['Decade'].unique().tolist())
+        chosen_decade = st.selectbox("Choose a decade:", options=available_decades)
+
+        if st.button("🚀 Start Mystery Roster", use_container_width=True):
+            pool = decade_rosters_df[decade_rosters_df['Decade'] == chosen_decade]
+            target_row = pool.sample(1).iloc[0]
+            st.session_state.mr_decade = chosen_decade
+            st.session_state.mr_target = {
+                "Team": target_row["Team"],
+                "TeamFull": target_row["TeamFull"],
+                "Year": int(target_row["Year"]),
+                "PlayerOrder": [p for p in str(target_row["PlayerOrder"]).split("|") if p],
+            }
+            st.session_state.mr_started = True
+            st.session_state.mr_solved = False
+            st.session_state.mr_final_score = None
+            st.session_state.mr_last_feedback = ""
+            st.session_state.start_time = time.time()
+            st.rerun()
+    else:
+        target = st.session_state.mr_target
+        roster = target["PlayerOrder"]
+        elapsed = time.time() - st.session_state.start_time
+        revealed_count = min(len(roster), 10, 1 + int(elapsed // 30)) if roster else 0
+
+        if st.session_state.game_over:
+            st.write("---")
+            st.subheader("🏁 Mystery Roster Result")
+            if st.session_state.mr_solved:
+                score = st.session_state.mr_final_score
+                st.info(f"**You solved it!** It was the **{target['Year']} {target['TeamFull']}**.")
+                st.metric(label="Points Earned", value=f"{score} / 10")
+                if score >= 9:
+                    st.balloons()
+                    st.success("👑 **MASTER DETECTIVE!** You barely needed a clue.")
+                elif score >= 6:
+                    st.success("🔍 **SHARP EYE!** Great read on that roster.")
+                elif score >= 3:
+                    st.warning("👀 **DECENT READ.** You got there eventually.")
+                else:
+                    st.error("🐢 **JUST IN TIME.** Down to the wire, but you got it!")
+            else:
+                st.error(f"⏰ **Time's up!** The answer was the **{target['Year']} {target['TeamFull']}**.")
+                st.metric(label="Points Earned", value="0 / 10")
+
+            with st.expander("👀 Full roster reveal order:"):
+                st.write(", ".join(roster) if roster else "No roster data.")
+        else:
+            st.write(f"### Decade: {st.session_state.mr_decade}")
+            st.write(f"**Players revealed so far ({revealed_count}):**")
+            st.info(", ".join(roster[:revealed_count]) if roster else "No roster data available.")
+            st.caption(f"Current potential score if correct: **{max(0, 10 - (revealed_count - 1))} / 10**")
+
+            if st.button("🔄 Check for New Reveal", use_container_width=True):
+                st.rerun()
+
+            candidate_years = sorted(decade_rosters_df[decade_rosters_df['Decade'] == st.session_state.mr_decade]['Year'].unique().tolist())
+
+            with st.form("mr_guess_form"):
+                g_col1, g_col2 = st.columns(2)
+                with g_col1:
+                    guess_year = st.selectbox("Year:", options=candidate_years, index=None, placeholder="Choose year...")
+                with g_col2:
+                    guess_team = st.selectbox("Team:", options=global_teams, index=None, placeholder="Choose team...")
+                submit_guess = st.form_submit_button("Submit Guess", use_container_width=True)
+
+            if submit_guess:
+                if guess_year == target["Year"] and guess_team == target["Team"]:
+                    st.session_state.mr_solved = True
+                    st.session_state.mr_final_score = max(0, 10 - (revealed_count - 1))
+                    st.session_state.game_over = True
+                    st.rerun()
+                else:
+                    st.session_state.mr_last_feedback = "❌ Not quite — keep watching for more clues!"
+
+            if st.session_state.mr_last_feedback:
+                st.markdown(st.session_state.mr_last_feedback)
 
 # ==========================================
 # BRANCH C: HALL OF FAME NAMING SPRINT
