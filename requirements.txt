@@ -1,6 +1,12 @@
-streamlit
-pandas
-numpy
-matplotlib
-openpyxl
-thefuzz
+# Only needed to run build_nba_data.py locally to regenerate the CSVs.
+# Do NOT put this file at your repo root as requirements.txt -- Streamlit
+# Cloud would install all of this into the deployed app for no reason.
+# Use it with: pip install -r requirements-scrape.txt
+pandas>=2.0,<3.0
+numpy>=1.24,<2.1
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+thefuzz>=0.19
+python-Levenshtein>=0.20
+ 
