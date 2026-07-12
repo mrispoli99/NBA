@@ -135,6 +135,7 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.mr_solved = False
     st.session_state.mr_final_score = None
     st.session_state.mr_last_feedback = ""
+    st.session_state.mr_forced_reveals = 0
 
 # ==========================================
 # 3. GLOBAL ENCAPSULATED TIMER FRAME
@@ -466,13 +467,15 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
             st.session_state.mr_solved = False
             st.session_state.mr_final_score = None
             st.session_state.mr_last_feedback = ""
+            st.session_state.mr_forced_reveals = 0
             st.session_state.start_time = time.time()
             st.rerun()
     else:
         target = st.session_state.mr_target
         roster = target["PlayerOrder"]
         elapsed = time.time() - st.session_state.start_time
-        revealed_count = min(len(roster), 10, 1 + int(elapsed // 30)) if roster else 0
+        time_based_count = min(len(roster), 10, 1 + int(elapsed // 30)) if roster else 0
+        revealed_count = max(time_based_count, min(len(roster), st.session_state.mr_forced_reveals)) if roster else 0
 
         if st.session_state.game_over:
             st.write("---")
@@ -502,8 +505,15 @@ elif active_selection == "🕵️ MYSTERY ROSTER":
             st.info(", ".join(roster[:revealed_count]) if roster else "No roster data available.")
             st.caption(f"Current potential score if correct: **{max(0, 10 - (revealed_count - 1))} / 10**")
 
-            if st.button("🔄 Check for New Reveal", use_container_width=True):
-                st.rerun()
+            reveal_col1, reveal_col2 = st.columns(2)
+            with reveal_col1:
+                if st.button("🔄 Check for New Reveal", use_container_width=True, help="Free — just syncs the display to however much time has actually passed."):
+                    st.rerun()
+            with reveal_col2:
+                next_reveal_possible = revealed_count < min(len(roster), 10)
+                if st.button("👀 Reveal Next Player Now (-1 pt)", use_container_width=True, disabled=not next_reveal_possible, help="Forces the next player to show immediately, even if 30 seconds haven't passed."):
+                    st.session_state.mr_forced_reveals = min(len(roster), 10, revealed_count + 1)
+                    st.rerun()
 
             candidate_years = sorted(decade_rosters_df[decade_rosters_df['Decade'] == st.session_state.mr_decade]['Year'].unique().tolist())
 
