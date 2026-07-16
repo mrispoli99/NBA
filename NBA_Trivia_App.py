@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import time
 import random
+import re
 from thefuzz import process
 
 st.set_page_config(page_title="NBA Complete Trivia Arena", layout="centered")
@@ -71,6 +72,62 @@ hof_master_list = load_hof_list()
 player_meta_df, player_meta_master_list = load_player_metadata()
 decade_rosters_df = load_decade_rosters()
 
+def _parse_accolade_counts(accolades_text):
+    """Pull an All-Star count, championship count, and All-NBA Team count out
+    of the freeform Accolades string scraped from each player's bio (e.g. '5x
+    All-Star; 3x NBA Champion; 10x All-NBA; 2011 Most Valuable Player'). Falls
+    back to counting 1 if the badge is present without a leading number."""
+    text = str(accolades_text) if accolades_text else ""
+    allstar_match = re.search(r"(\d+)x?\s*(?:Time\s*)?All[\s-]?Star", text, re.IGNORECASE)
+    allstar_count = int(allstar_match.group(1)) if allstar_match else (1 if re.search(r"All[\s-]?Star", text, re.IGNORECASE) else 0)
+    champ_match = re.search(r"(\d+)x?\s*(?:NBA\s*)?Champion", text, re.IGNORECASE)
+    champ_count = int(champ_match.group(1)) if champ_match else (1 if re.search(r"Champion", text, re.IGNORECASE) else 0)
+    allnba_match = re.search(r"(\d+)x?\s*(?:Time\s*)?All[\s-]?NBA", text, re.IGNORECASE)
+    allnba_count = int(allnba_match.group(1)) if allnba_match else (1 if re.search(r"All[\s-]?NBA", text, re.IGNORECASE) else 0)
+    return allstar_count, champ_count, allnba_count
+
+@st.cache_data
+def compute_composite_scores(meta_df):
+    """A balanced heuristic 'how good was this player' score, min-max
+    normalized across the full curated player pool: ~35% career per-game
+    production (scoring/rebounding/assists/steals/blocks), ~15% career Win
+    Shares (an all-in-one value metric), ~50% awards/accolades. This isn't an
+    authoritative ranking -- it's just a consistent reference point the
+    Ranking Scrutinizer uses to flag placements that look out of step with a
+    player's peers."""
+    if meta_df.empty:
+        return meta_df.assign(CompositeScore=[])
+    d = meta_df.copy()
+    numeric_cols = ["PPG", "RPG", "APG", "MVP_Count", "DPOY_Count", "FMVP_Count", "ROY_Count"]
+    # SPG/BPG/WS only exist in CSVs generated after this update; default to 0
+    # (i.e. no contribution) if scraping this pool with an older CSV.
+    for col in ["SPG", "BPG", "WS"]:
+        if col not in d.columns:
+            d[col] = 0
+        numeric_cols.append(col)
+    for col in numeric_cols:
+        d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0)
+    parsed = d["Accolades"].apply(_parse_accolade_counts)
+    d["AllStar_Count"] = parsed.apply(lambda t: t[0])
+    d["Champ_Count"] = parsed.apply(lambda t: t[1])
+    d["AllNBA_Count"] = parsed.apply(lambda t: t[2])
+
+    def norm(series):
+        rng = series.max() - series.min()
+        return (series - series.min()) / rng if rng > 0 else series * 0
+
+    weights = {
+        "PPG": 0.15, "RPG": 0.08, "APG": 0.08, "SPG": 0.02, "BPG": 0.02,
+        "WS": 0.15,
+        "AllStar_Count": 0.10, "AllNBA_Count": 0.12, "MVP_Count": 0.12,
+        "FMVP_Count": 0.06, "Champ_Count": 0.04,
+        "DPOY_Count": 0.04, "ROY_Count": 0.02,
+    }
+    d["CompositeScore"] = sum(norm(d[col]) * w for col, w in weights.items())
+    return d
+
+player_scores_df = compute_composite_scores(player_meta_df)
+
 if df is None or df.empty:
     st.error("⚠️ 'nba_trivia_data.csv' not found. Please run your scraper script first.")
     st.stop()
@@ -85,6 +142,7 @@ game_modes = {
     "🔍 PLAYER ID LIGHTNING": {"col": "PLAYER_META", "type": "text_sprint", "start_year": 0},
     "🕵️ MYSTERY ROSTER": {"col": "ROSTER", "type": "text_sprint", "start_year": 0},
     "📋 ROSTER RECALL LIGHTNING": {"col": "ROSTER_RECALL", "type": "text_sprint", "start_year": 0},
+    "🔬 RANKING SCRUTINIZER": {"col": "RANKING_TOOL", "type": "tool", "start_year": 0},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
     "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
@@ -161,6 +219,8 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.rr_target = None
     st.session_state.rr_correct_guesses = []
     st.session_state.rr_last_feedback = ""
+    # Ranking Scrutinizer state variable
+    st.session_state.rank_scrutinizer_results = None
 
 
 # ==========================================
@@ -314,6 +374,17 @@ if active_selection == "🏠 HOME SCREEN":
         if st.button("🪂 Rebound Leader (RPG)", use_container_width=True):
             st.session_state.nav_state = "NBA Rebound leader"; st.rerun()
 
+    st.write("---")
+    st.write("## 🔬 Analysis Tools")
+    st.write("""
+    * **Ranking Scrutinizer:** Not a game — paste in your own top players list (overall or by position, up to 500 names)
+      and get each player's stats back alongside feedback on whether their spot looks about right, too high, or too low
+      compared to the rest of your own list.
+    """)
+    if st.button("🔬 Launch Ranking Scrutinizer", use_container_width=True):
+        st.session_state.nav_state = "🔬 RANKING SCRUTINIZER"
+        st.rerun()
+
 # ==========================================
 # BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
 # ==========================================
@@ -322,7 +393,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER", "📋 ROSTER RECALL LIGHTNING"]]
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER", "📋 ROSTER RECALL LIGHTNING", "🔬 RANKING SCRUTINIZER"]]
         chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
         chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
@@ -660,6 +731,7 @@ elif active_selection == "📋 ROSTER RECALL LIGHTNING":
                 else:
                     st.toast(f"❌ '{raw_guess}' wasn't on this roster.", icon="🧱")
                     st.session_state.rr_last_feedback = f"❌ '{raw_guess}' wasn't on this roster."
+                st.rerun()
 
             if st.session_state.rr_last_feedback:
                 st.markdown(st.session_state.rr_last_feedback)
@@ -712,7 +784,6 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
         else:
             st.write(f"### Score: **{len(st.session_state.hof_correct_guesses)}** Players Named")
             
-            # Form actions update state variables locally; manual st.rerun removed to ensure form stability
             with st.form("hof_entry_form", clear_on_submit=True):
                 user_input = st.text_input("Type a player name and press enter:", placeholder="e.g. Larry Bird, Magic Johnson...")
                 submit_name = st.form_submit_button("Submit Name", use_container_width=True)
@@ -729,10 +800,125 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
                         st.toast(f"⚠️ You already named {best_match}!", icon="👀")
                 else:
                     st.toast(f"❌ '{raw_guess}' didn't match any HOF players.", icon="🧱")
+                st.rerun()
 
             if st.session_state.hof_correct_guesses:
                 st.write("### 📝 Your Confirmed Hall of Famers:")
                 st.write(", ".join(st.session_state.hof_correct_guesses))
+
+# ==========================================
+# BRANCH E: RANKING SCRUTINIZER (NOT A GAME -- AN ANALYSIS TOOL)
+# ==========================================
+elif active_selection == "🔬 RANKING SCRUTINIZER":
+    st.markdown("""
+    This isn't a timed game — paste in your own personal top-players list (up to 500 names)
+    and we'll pull each player's stats and flag any spots that look out of step with the rest
+    of **your own list**. Rank overall or position-by-position, your call.
+    """)
+
+    if player_scores_df.empty:
+        st.warning("⚠️ 'nba_player_metadata.csv' not found. Run the build_nba_data.py scraper (scrape_player_metadata step) to generate it, then reload the app.")
+    else:
+        st.caption("Scoring blends career averages (PPG/RPG/APG) with awards & accolades (All-Star nods, MVPs, rings, etc.) roughly 50/50 — it's a heuristic reference point, not a verdict. Only players in our curated database (HOF inductees, award winners, and stat leaders) can be scored.")
+
+        mode = st.radio("How do you want to rank?", options=["Overall (one list)", "By Position (5 lists)"], horizontal=True, key="rank_mode_select")
+
+        POSITIONS = ["Center", "Power Forward", "Small Forward", "Shooting Guard", "Point Guard"]
+
+        def _parse_ranked_names(text):
+            return [line.strip() for line in text.split("\n") if line.strip()]
+
+        entries = []  # (user_rank_within_group, typed_name, group_label)
+
+        if mode == "Overall (one list)":
+            raw = st.text_area("Paste your ranked list, one player per line, best to worst (up to 500):", height=320, key="rank_overall_input")
+            names = _parse_ranked_names(raw)
+            if len(names) > 500:
+                st.warning(f"You entered {len(names)} names — only the first 500 will be analyzed.")
+                names = names[:500]
+            for i, name in enumerate(names, 1):
+                entries.append((i, name, "Overall"))
+        else:
+            st.caption("Leave any position blank if you don't want to rank it.")
+            for pos in POSITIONS:
+                raw = st.text_area(f"{pos} — ranked list (one per line, best to worst):", height=160, key=f"rank_pos_{pos}")
+                for i, name in enumerate(_parse_ranked_names(raw), 1):
+                    entries.append((i, name, pos))
+            if len(entries) > 500:
+                st.warning(f"You entered {len(entries)} names total across all positions — only the first 500 (in the order shown above) will be analyzed.")
+                entries = entries[:500]
+
+        if st.button("🔬 Analyze My Rankings", use_container_width=True, disabled=(len(entries) == 0)):
+            results = []
+            for user_rank, typed_name, group in entries:
+                best_match, match_score = process.extractOne(typed_name, player_meta_master_list)
+                if match_score >= 85:
+                    row = player_scores_df[player_scores_df['Player'] == best_match].iloc[0]
+                    results.append({
+                        "UserRank": user_rank, "Group": group, "TypedName": typed_name,
+                        "Player": best_match, "MatchScore": match_score,
+                        "Position": row["Position"], "Years_Active": row["Years_Active"], "Teams": row["Teams"],
+                        "PPG": row["PPG"], "RPG": row["RPG"], "APG": row["APG"],
+                        "SPG": row.get("SPG", "N/A"), "BPG": row.get("BPG", "N/A"), "WS": row.get("WS", "N/A"),
+                        "Accolades": row["Accolades"],
+                        "CompositeScore": row["CompositeScore"], "Found": True,
+                    })
+                else:
+                    results.append({
+                        "UserRank": user_rank, "Group": group, "TypedName": typed_name,
+                        "Player": typed_name, "MatchScore": match_score,
+                        "Position": "N/A", "Years_Active": "N/A", "Teams": "N/A",
+                        "PPG": "N/A", "RPG": "N/A", "APG": "N/A",
+                        "SPG": "N/A", "BPG": "N/A", "WS": "N/A", "Accolades": "",
+                        "CompositeScore": None, "Found": False,
+                    })
+            st.session_state.rank_scrutinizer_results = pd.DataFrame(results)
+
+        if st.session_state.get("rank_scrutinizer_results") is not None and not st.session_state.rank_scrutinizer_results.empty:
+            res_df = st.session_state.rank_scrutinizer_results.copy()
+            res_df["Feedback"] = "⚠️ Not found in database — no stats available"
+            res_df["CompositeRank"] = None
+
+            for grp, grp_df in res_df[res_df["Found"]].groupby("Group"):
+                grp_df = grp_df.sort_values("CompositeScore", ascending=False)
+                n = len(grp_df)
+                threshold = max(2, round(0.1 * n))
+                comp_ranks = pd.Series(range(1, n + 1), index=grp_df.index)
+                for idx in grp_df.index:
+                    comp_rank = comp_ranks[idx]
+                    diff = comp_rank - res_df.loc[idx, "UserRank"]
+                    if abs(diff) <= threshold:
+                        fb = "✅ About right"
+                    elif diff > 0:
+                        fb = f"⬇️ Ranked higher than the numbers support (data-based spot in your list: ~#{comp_rank})"
+                    else:
+                        fb = f"⬆️ Ranked lower than the numbers support (data-based spot in your list: ~#{comp_rank})"
+                    res_df.loc[idx, "Feedback"] = fb
+                    res_df.loc[idx, "CompositeRank"] = comp_rank
+
+            st.write("---")
+            total_n = len(res_df)
+            found_n = int(res_df["Found"].sum())
+            right_n = int((res_df["Feedback"] == "✅ About right").sum())
+            up_n = int(res_df["Feedback"].str.startswith("⬆️").sum())
+            down_n = int(res_df["Feedback"].str.startswith("⬇️").sum())
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Total Entered", total_n)
+            m2.metric("Matched", found_n)
+            m3.metric("About Right", right_n)
+            m4.metric("Rank Higher?", up_n)
+            m5.metric("Rank Lower?", down_n)
+
+            display_cols = ["UserRank", "Player", "Position", "Years_Active", "Teams", "PPG", "RPG", "APG", "SPG", "BPG", "WS", "Accolades", "Feedback"]
+            if mode == "Overall (one list)":
+                st.dataframe(res_df[display_cols].sort_values("UserRank"), use_container_width=True, hide_index=True)
+            else:
+                for pos in POSITIONS:
+                    pos_df = res_df[res_df["Group"] == pos]
+                    if pos_df.empty:
+                        continue
+                    st.write(f"#### {pos}")
+                    st.dataframe(pos_df[display_cols].sort_values("UserRank"), use_container_width=True, hide_index=True)
 
 # ==========================================
 # BRANCH D: REGULAR TIMELINE LIST GAME MODES
