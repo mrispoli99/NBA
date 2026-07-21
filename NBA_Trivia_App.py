@@ -217,6 +217,78 @@ def _drop_names_already_in_list(suggested_rows, existing_names, threshold=88):
             kept.append(row)
     return kept
 
+STAT_COLUMNS = [
+    ("PPG", "Points Per Game"), ("RPG", "Rebounds Per Game"), ("APG", "Assists Per Game"),
+    ("SPG", "Steals Per Game"), ("BPG", "Blocks Per Game"),
+    ("FG_PCT", "FG%"), ("THREE_PCT", "3P%"), ("FT_PCT", "FT%"),
+    ("PER", "PER"), ("WS", "Win Shares"), ("BPM", "Box Plus/Minus"), ("TS_PCT", "True Shooting %"),
+]
+
+def _compare_players(client, model, names):
+    """One API call: pull each player's career stat line (basic + advanced)
+    plus accolades, and produce an overall best-to-worst ranking with
+    reasoning. Small enough (<=5 players) to do in a single call rather
+    than chunking."""
+    stat_codes = "|".join(code for code, _ in STAT_COLUMNS)
+    players_str = "\n".join(f"- {n}" for n in names)
+
+    prompt = f"""Compare these NBA players by their career stats:
+
+{players_str}
+
+For each player, provide their correctly identified full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from the text, plus their career stat line: basic per-game stats (points, rebounds, assists, steals, blocks, FG%, 3P%, FT%), advanced stats (PER, Win Shares, Box Plus/Minus, True Shooting %), and a brief accolades summary (championships, MVP/DPOY/Finals MVP/ROY awards, All-Star and All-NBA selections, etc.).
+
+IMPORTANT -- accuracy over specificity: only state a precise number if you're genuinely confident it's correct, for stats AND for accolade counts (e.g. don't guess an exact championship or All-Star count you're not sure of). If unsure of an exact figure, give your best reasonable estimate for stats, or describe accolades qualitatively (e.g. "multiple-time All-Star, won a title with Detroit") rather than a suspiciously precise-looking invented number. Use "N/A" for any stat you don't have any reasonable basis for (e.g. it's UNRECOGNIZED).
+
+Then rank the recognized players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context -- not just the raw numbers above.
+
+Respond in EXACTLY this format and nothing else -- no extra commentary:
+
+STATS
+PLAYER|POSITION|YEARS_ACTIVE|{stat_codes}|ACCOLADES
+(one line per player above, in the same order given, using the pipe format for stats: {stat_codes}, then ACCOLADES as a short phrase under 20 words)
+
+RANKING
+RANK|PLAYER|REASON
+(one line per RECOGNIZED player, rank 1 = best, one short sentence under 25 words per reason)
+"""
+
+    resp = client.messages.create(
+        model=model,
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+    stats_rows, ranking_rows = [], []
+    section = None
+    expected_stat_fields = 3 + len(STAT_COLUMNS) + 1  # player, position, years, stats..., accolades
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.upper() == "STATS":
+            section = "stats"
+            continue
+        if line.upper() == "RANKING":
+            section = "ranking"
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if section == "stats" and len(parts) == expected_stat_fields:
+            row = {"Player": parts[0], "Position": parts[1], "Years_Active": parts[2]}
+            for (code, label), val in zip(STAT_COLUMNS, parts[3:3 + len(STAT_COLUMNS)]):
+                row[code] = val
+            row["Accolades"] = parts[-1]
+            stats_rows.append(row)
+        elif section == "ranking" and len(parts) == 3:
+            try:
+                rank = int(parts[0])
+            except ValueError:
+                continue
+            ranking_rows.append({"Rank": rank, "Player": parts[1], "Reason": parts[2]})
+
+    return stats_rows, ranking_rows
+
 def _file_to_content_block(uploaded_file):
     import base64
     data = base64.standard_b64encode(uploaded_file.getvalue()).decode("utf-8")
@@ -300,6 +372,7 @@ game_modes = {
     "🕵️ MYSTERY ROSTER": {"col": "ROSTER", "type": "text_sprint", "start_year": 0},
     "📋 ROSTER RECALL LIGHTNING": {"col": "ROSTER_RECALL", "type": "text_sprint", "start_year": 0},
     "🔬 RANKING SCRUTINIZER": {"col": "RANKING_TOOL", "type": "tool", "start_year": 0},
+    "🆚 PLAYER SHOWDOWN": {"col": "SHOWDOWN_TOOL", "type": "tool", "start_year": 0},
     "NBA Rookie of the year": {"col": "ROY", "type": "player", "start_year": 1953},
     "NBA Scoring leader": {"col": "Scoring Leader", "type": "player", "start_year": 1948},
     "NBA finals winner": {"col": "Champion", "type": "team", "start_year": 1948},
@@ -379,6 +452,8 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     # Ranking Scrutinizer state variable
     st.session_state.rank_scrutinizer_results = None
     st.session_state.rank_scrutinizer_recommendations = None
+    st.session_state.showdown_stats = None
+    st.session_state.showdown_ranking = None
 
 
 # ==========================================
@@ -538,10 +613,18 @@ if active_selection == "🏠 HOME SCREEN":
     * **Ranking Scrutinizer:** Not a game — paste in your own top players list (overall or by position, up to 500 names)
       and get each player's stats back alongside feedback on whether their spot looks about right, too high, or too low
       compared to the rest of your own list.
+    * **Player Showdown:** Pick up to 5 players and get a side-by-side career stat comparison (basic + advanced),
+      with the best value in each stat highlighted, plus an overall best-to-worst ranking.
     """)
-    if st.button("🔬 Launch Ranking Scrutinizer", use_container_width=True):
-        st.session_state.nav_state = "🔬 RANKING SCRUTINIZER"
-        st.rerun()
+    tool_col1, tool_col2 = st.columns(2)
+    with tool_col1:
+        if st.button("🔬 Launch Ranking Scrutinizer", use_container_width=True):
+            st.session_state.nav_state = "🔬 RANKING SCRUTINIZER"
+            st.rerun()
+    with tool_col2:
+        if st.button("🆚 Launch Player Showdown", use_container_width=True):
+            st.session_state.nav_state = "🆚 PLAYER SHOWDOWN"
+            st.rerun()
 
 # ==========================================
 # BRANCH B: LIGHTNING RAPID FIRE GAME LOOP
@@ -551,7 +634,7 @@ elif active_selection == "⚡ LIGHTNING RAPID FIRE":
         st.write("### ⚙️ Configure Your Blitz Round")
         st.markdown("Choose your custom pools and length limit below. The 7-minute timer will not start until you press the launch button.")
         
-        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER", "📋 ROSTER RECALL LIGHTNING", "🔬 RANKING SCRUTINIZER"]]
+        available_metrics = [k for k in game_modes.keys() if k not in ["⚡ LIGHTNING RAPID FIRE", "🏠 HOME SCREEN", "🏛️ HOF NAMING SPRINT", "🔍 PLAYER ID LIGHTNING", "🕵️ MYSTERY ROSTER", "📋 ROSTER RECALL LIGHTNING", "🔬 RANKING SCRUTINIZER", "🆚 PLAYER SHOWDOWN"]]
         chosen_metrics = st.multiselect("Metrics to include:", options=available_metrics, default=available_metrics)
         chosen_limit = st.selectbox("Number of questions for this round:", options=[25, 30, 40, 50], index=1)
         
@@ -1176,6 +1259,81 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
                         continue
                     st.write(f"#### {pos}")
                     st.dataframe(pos_rec_df[rec_display_cols].sort_values("EstimatedRank"), use_container_width=True, hide_index=True)
+
+# ==========================================
+# BRANCH F: PLAYER SHOWDOWN (NOT A GAME -- A COMPARISON TOOL)
+# ==========================================
+elif active_selection == "🆚 PLAYER SHOWDOWN":
+    st.markdown("""
+    Pick up to 5 players and get a side-by-side career stat comparison — basic per-game
+    numbers and advanced metrics like Win Shares — with the best value in each stat
+    highlighted, plus an overall best-to-worst ranking.
+    """)
+    st.caption("Powered by the Anthropic API (Claude Sonnet) using its own basketball knowledge, same as the Ranking Scrutinizer.")
+
+    client = _get_anthropic_client()
+    if not ANTHROPIC_AVAILABLE:
+        st.warning("⚠️ The 'anthropic' package isn't installed. Add `anthropic` to requirements.txt and redeploy.")
+    elif client is None:
+        st.warning("⚠️ No Anthropic API key configured. Add ANTHROPIC_API_KEY to this app's Streamlit Cloud secrets, then reload.")
+    else:
+        cols = st.columns(5)
+        player_inputs = []
+        for i, col in enumerate(cols):
+            with col:
+                player_inputs.append(st.text_input(f"Player {i+1}", key=f"showdown_p{i+1}"))
+
+        names = [p.strip() for p in player_inputs if p.strip()]
+
+        if st.button("⚔️ Compare Players", use_container_width=True, disabled=(len(names) < 2)):
+            with st.spinner("Pulling stats and comparing..."):
+                try:
+                    stats_rows, ranking_rows = _compare_players(client, "claude-sonnet-5", names)
+                    st.session_state.showdown_stats = stats_rows
+                    st.session_state.showdown_ranking = ranking_rows
+                except Exception as e:
+                    st.error(f"⚠️ API error: {e}")
+                    st.session_state.showdown_stats = None
+                    st.session_state.showdown_ranking = None
+        if len(names) < 2:
+            st.caption("Enter at least 2 players to compare.")
+
+        if st.session_state.get("showdown_stats"):
+            stats_rows = st.session_state.showdown_stats
+            recognized = [r for r in stats_rows if r["Player"] != "UNRECOGNIZED"]
+            unrecognized_count = len(stats_rows) - len(recognized)
+            if unrecognized_count:
+                st.warning(f"⚠️ {unrecognized_count} name(s) weren't confidently recognized as NBA players — check spelling and try again.")
+
+            if recognized:
+                st.write("---")
+                info_cols = st.columns(len(recognized))
+                for col, r in zip(info_cols, recognized):
+                    with col:
+                        st.markdown(f"**{r['Player']}**")
+                        st.caption(f"{r['Position']} · {r['Years_Active']}")
+                        st.caption(f"🏅 {r.get('Accolades', 'N/A')}")
+
+                stat_df = pd.DataFrame(
+                    {r["Player"]: [pd.to_numeric(r.get(code), errors="coerce") for code, _ in STAT_COLUMNS] for r in recognized},
+                    index=[label for _, label in STAT_COLUMNS],
+                )
+                st.dataframe(
+                    stat_df.style
+                        .highlight_max(axis=1, color="#c9f2d8")
+                        .highlight_min(axis=1, color="#f7c9c9")
+                        .format(precision=1, na_rep="N/A"),
+                    use_container_width=True,
+                )
+                st.caption("🟢 Best in row · 🔴 Worst in row")
+
+            ranking_rows = st.session_state.get("showdown_ranking") or []
+            if ranking_rows:
+                st.write("---")
+                st.write("### 🏆 Overall Ranking")
+                for r in sorted(ranking_rows, key=lambda x: x["Rank"]):
+                    medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(r["Rank"], f"#{r['Rank']}")
+                    st.markdown(f"**{medal} {r['Player']}** — {r['Reason']}")
 
 # ==========================================
 # BRANCH D: REGULAR TIMELINE LIST GAME MODES
