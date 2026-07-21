@@ -238,9 +238,11 @@ def _compare_players(client, model, names):
 
 For each player, provide their correctly identified full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from the text, plus their career stat line: basic per-game stats (points, rebounds, assists, steals, blocks, FG%, 3P%, FT%), advanced stats (PER, Win Shares, Box Plus/Minus, True Shooting %), and a brief accolades summary (championships, MVP/DPOY/Finals MVP/ROY awards, All-Star and All-NBA selections, etc.).
 
+Report FG%, 3P%, FT%, and True Shooting % as decimal fractions with three decimal places (e.g. 0.507), the standard basketball convention -- NOT as a percentage like 50.7.
+
 IMPORTANT -- accuracy over specificity: only state a precise number if you're genuinely confident it's correct, for stats AND for accolade counts (e.g. don't guess an exact championship or All-Star count you're not sure of). If unsure of an exact figure, give your best reasonable estimate for stats, or describe accolades qualitatively (e.g. "multiple-time All-Star, won a title with Detroit") rather than a suspiciously precise-looking invented number. Use "N/A" for any stat you don't have any reasonable basis for (e.g. it's UNRECOGNIZED).
 
-Then rank the recognized players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context -- not just the raw numbers above.
+Then rank the recognized players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context. Weight career Win Shares more heavily than the other individual stats when forming this judgment -- treat it as one of the strongest signals of overall career value -- but still use holistic judgment rather than ranking purely by Win Shares alone.
 
 Respond in EXACTLY this format and nothing else -- no extra commentary:
 
@@ -1314,15 +1316,29 @@ elif active_selection == "🆚 PLAYER SHOWDOWN":
                         st.caption(f"{r['Position']} · {r['Years_Active']}")
                         st.caption(f"🏅 {r.get('Accolades', 'N/A')}")
 
+                PCT_LABELS = ["FG%", "3P%", "FT%", "True Shooting %"]
+
+                def _to_stat_value(code, raw_val):
+                    val = pd.to_numeric(raw_val, errors="coerce")
+                    label = dict(STAT_COLUMNS)[code]
+                    # Defensive normalization: if a percentage came back as
+                    # e.g. 50.7 instead of the requested 0.507, fix it up
+                    # rather than displaying a nonsensical number.
+                    if label in PCT_LABELS and pd.notna(val) and val > 1:
+                        val = val / 100
+                    return val
+
                 stat_df = pd.DataFrame(
-                    {r["Player"]: [pd.to_numeric(r.get(code), errors="coerce") for code, _ in STAT_COLUMNS] for r in recognized},
+                    {r["Player"]: [_to_stat_value(code, r.get(code)) for code, _ in STAT_COLUMNS] for r in recognized},
                     index=[label for _, label in STAT_COLUMNS],
                 )
+                other_labels = [label for label in stat_df.index if label not in PCT_LABELS]
                 st.dataframe(
                     stat_df.style
                         .highlight_max(axis=1, color="#c9f2d8")
                         .highlight_min(axis=1, color="#f7c9c9")
-                        .format(precision=1, na_rep="N/A"),
+                        .format("{:.3f}", subset=pd.IndexSlice[PCT_LABELS, :], na_rep="N/A")
+                        .format("{:.1f}", subset=pd.IndexSlice[other_labels, :], na_rep="N/A"),
                     use_container_width=True,
                 )
                 st.caption("🟢 Best in row · 🔴 Worst in row")
