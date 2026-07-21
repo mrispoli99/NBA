@@ -224,17 +224,17 @@ STAT_COLUMNS = [
     ("PER", "PER"), ("WS", "Win Shares"), ("BPM", "Box Plus/Minus"), ("TS_PCT", "True Shooting %"),
 ]
 
-def _compare_players(client, model, names):
-    """One API call: pull each player's career stat line (basic + advanced)
-    plus accolades, and produce an overall best-to-worst ranking with
-    reasoning. Small enough (<=5 players) to do in a single call rather
-    than chunking. Web search is enabled so Claude can verify current
-    stats/accolades instead of relying only on training-data memory,
-    which was going stale for recent seasons and ascending players."""
+def _fetch_player_stats(client, model, names):
+    """Web-search-enabled call: pull each player's career stat line (basic +
+    advanced) plus accolades. Deliberately split out from ranking (below) so
+    each individual call has less to do -- with 5 players' worth of search
+    results competing for token budget in one call, cramming stats AND
+    ranking into a single response was truncating and silently returning
+    nothing usable."""
     stat_codes = "|".join(code for code, _ in STAT_COLUMNS)
     players_str = "\n".join(f"- {n}" for n in names)
 
-    prompt = f"""Compare these NBA players by their career stats:
+    prompt = f"""Look up these NBA players' career stats:
 
 {players_str}
 
@@ -248,17 +248,11 @@ IMPORTANT -- accuracy over specificity: only state a precise number if you're ge
 
 BE ESPECIALLY CAREFUL with confident negative claims about accolades (e.g. "no All-Star appearances," "never won an award") -- these are riskier than positive claims, especially for younger or currently-active players. Search to confirm before asserting a negative rather than assuming.
 
-Then rank the recognized players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context. Weight accolades more heavily than raw stats when forming this judgment -- specifically All-Star appearances, All-NBA selections, and scoring titles are strong signals of how a player was actually regarded -- but still use holistic judgment rather than ranking purely by accolade counts alone.
-
-After you've finished any searching and analysis, respond with a FINAL answer in EXACTLY this format and nothing else in that final answer -- no extra commentary:
+After you've finished any searching, respond with a FINAL answer in EXACTLY this format and nothing else in that final answer -- no extra commentary:
 
 STATS
 PLAYER|POSITION|YEARS_ACTIVE|{stat_codes}|ACCOLADES
 (one line per player above, in the same order given, using the pipe format for stats: {stat_codes}, then ACCOLADES as a short phrase under 20 words)
-
-RANKING
-RANK|PLAYER|REASON
-(one line per RECOGNIZED player, rank 1 = best, one short sentence under 25 words per reason)
 """
 
     resp = client.messages.create(
@@ -266,10 +260,11 @@ RANK|PLAYER|REASON
         max_tokens=6000,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt}],
+        timeout=150.0,
     )
     text = "".join(block.text for block in resp.content if hasattr(block, "text"))
 
-    stats_rows, ranking_rows = [], []
+    stats_rows = []
     section = None
     expected_stat_fields = 3 + len(STAT_COLUMNS) + 1  # player, position, years, stats..., accolades
     for line in text.strip().split("\n"):
@@ -279,9 +274,6 @@ RANK|PLAYER|REASON
         if line.upper() == "STATS":
             section = "stats"
             continue
-        if line.upper() == "RANKING":
-            section = "ranking"
-            continue
         parts = [p.strip() for p in line.split("|")]
         if section == "stats" and len(parts) == expected_stat_fields:
             row = {"Player": parts[0], "Position": parts[1], "Years_Active": parts[2]}
@@ -289,14 +281,56 @@ RANK|PLAYER|REASON
                 row[code] = val
             row["Accolades"] = parts[-1]
             stats_rows.append(row)
-        elif section == "ranking" and len(parts) == 3:
+    return stats_rows
+
+def _rank_players(client, model, stats_rows):
+    """Second call, no search needed -- a judgment call based on the stat
+    lines already gathered, so it's small, fast, and unlikely to truncate."""
+    recognized = [r for r in stats_rows if r["Player"] != "UNRECOGNIZED"]
+    if len(recognized) < 2:
+        return []
+
+    lines = []
+    for r in recognized:
+        stat_bits = ", ".join(f"{code}={r.get(code, 'N/A')}" for code, _ in STAT_COLUMNS)
+        lines.append(f"- {r['Player']} ({r['Position']}, {r['Years_Active']}): {stat_bits}. Accolades: {r.get('Accolades', 'N/A')}")
+    players_block = "\n".join(lines)
+
+    prompt = f"""Here are NBA players with their career stats and accolades already gathered:
+
+{players_block}
+
+Rank these players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context. Weight accolades more heavily than raw stats when forming this judgment -- specifically All-Star appearances, All-NBA selections, and scoring titles are strong signals of how a player was actually regarded -- but still use holistic judgment rather than ranking purely by accolade counts alone.
+
+Respond with EXACTLY {len(recognized)} lines, one per player, and NOTHING else -- no headers, no markdown, no commentary. Each line must use this exact pipe-delimited format:
+
+RANK|PLAYER|REASON
+
+Where RANK starts at 1 (best), PLAYER is their name exactly as given above, and REASON is one short sentence under 25 words.
+"""
+
+    resp = client.messages.create(
+        model=model,
+        max_tokens=2000,
+        messages=[{"role": "user", "content": prompt}],
+        timeout=60.0,
+    )
+    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+    ranking_rows = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) == 3:
             try:
                 rank = int(parts[0])
             except ValueError:
                 continue
             ranking_rows.append({"Rank": rank, "Player": parts[1], "Reason": parts[2]})
 
-    return stats_rows, ranking_rows
+    return ranking_rows
 
 def _file_to_content_block(uploaded_file):
     import base64
@@ -1295,19 +1329,23 @@ elif active_selection == "🆚 PLAYER SHOWDOWN":
         names = [p.strip() for p in player_inputs if p.strip()]
 
         if st.button("⚔️ Compare Players", use_container_width=True, disabled=(len(names) < 2)):
-            with st.spinner("Pulling stats and comparing..."):
-                try:
-                    stats_rows, ranking_rows = _compare_players(client, "claude-sonnet-5", names)
+            st.session_state.showdown_stats = None
+            st.session_state.showdown_ranking = None
+            try:
+                with st.spinner("Looking up current stats (this can take a bit longer since it's searching live)..."):
+                    stats_rows = _fetch_player_stats(client, "claude-sonnet-5", names)
+                if not stats_rows:
+                    st.error("⚠️ Didn't get a usable response back — this can happen with 5 players since there's more to search for. Try again, or try fewer players.")
+                else:
                     st.session_state.showdown_stats = stats_rows
-                    st.session_state.showdown_ranking = ranking_rows
-                except Exception as e:
-                    st.error(f"⚠️ API error: {e}")
-                    st.session_state.showdown_stats = None
-                    st.session_state.showdown_ranking = None
+                    with st.spinner("Ranking..."):
+                        st.session_state.showdown_ranking = _rank_players(client, "claude-sonnet-5", stats_rows)
+            except Exception as e:
+                st.error(f"⚠️ API error: {e}")
         if len(names) < 2:
             st.caption("Enter at least 2 players to compare.")
 
-        if st.session_state.get("showdown_stats"):
+        if st.session_state.get("showdown_stats") is not None:
             stats_rows = st.session_state.showdown_stats
             recognized = [r for r in stats_rows if r["Player"] != "UNRECOGNIZED"]
             unrecognized_count = len(stats_rows) - len(recognized)
