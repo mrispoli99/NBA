@@ -142,6 +142,68 @@ Where:
         })
     return rows
 
+def _image_to_content_block(uploaded_file):
+    import base64
+    media_type = uploaded_file.type or "image/jpeg"
+    data = base64.standard_b64encode(uploaded_file.getvalue()).decode("utf-8")
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+
+def _extract_overall_list_from_image(client, uploaded_file):
+    """Ask Claude to transcribe a ranked player list from a photo, in order,
+    one name per line, for the 'Overall' single-list mode."""
+    prompt = (
+        "This image shows a person's own ranked list of NBA players (rank 1 = best, "
+        "usually at the top). Transcribe the player names in the exact order they "
+        "appear, one full name per line. Fix obvious misspellings to the correct "
+        "real player name where you can tell who's meant. Output ONLY the names, "
+        "one per line, no numbering, no headers, no commentary, nothing else."
+    )
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": [_image_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
+    )
+    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+    return text.strip()
+
+def _extract_by_position_from_image(client, uploaded_file, positions):
+    """Ask Claude to transcribe a position-grouped ranked list from a photo,
+    returning '### {Position}' section headers so the response can be split
+    back out into each position's own list."""
+    pos_list = ", ".join(positions)
+    prompt = (
+        "This image shows a person's own ranked list of NBA players, broken out by "
+        f"position (some combination of: {pos_list} -- possibly using common "
+        "abbreviations like C/PF/SF/SG/PG or synonyms). For each position group "
+        "actually present in the image, output a line reading exactly '### ' "
+        f"followed by one of these exact labels: {pos_list}. Then list that group's "
+        "players one per line, in the order shown (rank 1 = best, first in that "
+        "group). Fix obvious misspellings to the correct real player name where you "
+        "can tell who's meant. Skip any position not present in the image. Output "
+        "nothing else -- no extra commentary, no numbering within each group."
+    )
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": [_image_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
+    )
+    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+    sections = {}
+    current_pos = None
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("### "):
+            label = line[4:].strip()
+            current_pos = label if label in positions else None
+            if current_pos:
+                sections.setdefault(current_pos, [])
+        elif current_pos:
+            sections[current_pos].append(line)
+    return {pos: "\n".join(names) for pos, names in sections.items()}
+
 if df is None or df.empty:
     st.error("⚠️ 'nba_trivia_data.csv' not found. Please run your scraper script first.")
     st.stop()
@@ -847,6 +909,25 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
         groups = {}  # group_label -> ordered list of names
 
         if mode == "Overall (one list)":
+            with st.expander("📷 Or upload a photo / text file instead of typing"):
+                up_img, up_file = st.columns(2)
+                with up_img:
+                    overall_image = st.file_uploader("Photo of your list", type=["png", "jpg", "jpeg"], key="rank_overall_img")
+                with up_file:
+                    overall_file = st.file_uploader("Text/CSV file", type=["txt", "csv"], key="rank_overall_file")
+                if st.button("📥 Extract List", key="extract_overall_btn", disabled=(overall_image is None and overall_file is None)):
+                    try:
+                        if overall_image is not None:
+                            with st.spinner("Reading your photo..."):
+                                extracted = _extract_overall_list_from_image(client, overall_image)
+                        else:
+                            extracted = overall_file.getvalue().decode("utf-8", errors="ignore")
+                        st.session_state["rank_overall_input"] = extracted.strip()
+                        st.success(f"Extracted {len(_parse_ranked_names(extracted))} names — review below before analyzing (fix anything that looks wrong).")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"⚠️ Couldn't extract list: {e}")
+
             raw = st.text_area("Paste your ranked list, one player per line, best to worst (up to 500):", height=320, key="rank_overall_input")
             names = _parse_ranked_names(raw)
             if len(names) > 500:
@@ -856,6 +937,24 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
                 groups["Overall"] = names
         else:
             st.caption("Leave any position blank if you don't want to rank it.")
+
+            with st.expander("📷 Or upload a photo of your position-grouped list instead of typing"):
+                st.caption("Works best if the photo has clear position labels (e.g. 'C:', 'Point Guards', etc.) above each group.")
+                position_image = st.file_uploader("Photo of your list", type=["png", "jpg", "jpeg"], key="rank_position_img")
+                if st.button("📥 Extract List", key="extract_position_btn", disabled=(position_image is None)):
+                    try:
+                        with st.spinner("Reading your photo..."):
+                            sections = _extract_by_position_from_image(client, position_image, POSITIONS)
+                        if not sections:
+                            st.warning("Couldn't identify any position groups in that photo — try typing manually instead.")
+                        else:
+                            for pos, text in sections.items():
+                                st.session_state[f"rank_pos_{pos}"] = text
+                            st.success(f"Extracted {sum(len(_parse_ranked_names(t)) for t in sections.values())} names across {len(sections)} position(s) — review below before analyzing.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"⚠️ Couldn't extract list: {e}")
+
             for pos in POSITIONS:
                 raw = st.text_area(f"{pos} — ranked list (one per line, best to worst):", height=160, key=f"rank_pos_{pos}")
                 names = _parse_ranked_names(raw)
