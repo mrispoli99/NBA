@@ -142,50 +142,56 @@ Where:
         })
     return rows
 
-def _image_to_content_block(uploaded_file):
+def _file_to_content_block(uploaded_file):
     import base64
-    media_type = uploaded_file.type or "image/jpeg"
     data = base64.standard_b64encode(uploaded_file.getvalue()).decode("utf-8")
+    name = (uploaded_file.name or "").lower()
+    is_pdf = (uploaded_file.type == "application/pdf") or name.endswith(".pdf")
+    if is_pdf:
+        return {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data}}
+    media_type = uploaded_file.type or "image/jpeg"
     return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
 
 def _extract_overall_list_from_image(client, uploaded_file):
-    """Ask Claude to transcribe a ranked player list from a photo, in order,
-    one name per line, for the 'Overall' single-list mode."""
+    """Ask Claude to transcribe a ranked player list from a photo or PDF, in
+    order, one name per line, for the 'Overall' single-list mode."""
     prompt = (
-        "This image shows a person's own ranked list of NBA players (rank 1 = best, "
-        "usually at the top). Transcribe the player names in the exact order they "
-        "appear, one full name per line. Fix obvious misspellings to the correct "
-        "real player name where you can tell who's meant. Output ONLY the names, "
-        "one per line, no numbering, no headers, no commentary, nothing else."
+        "This file shows a person's own ranked list of NBA players (rank 1 = best, "
+        "usually at the top or start). Transcribe the player names in the exact "
+        "order they appear, one full name per line. If it's a multi-page PDF, read "
+        "all pages in order. Fix obvious misspellings to the correct real player "
+        "name where you can tell who's meant. Output ONLY the names, one per line, "
+        "no numbering, no headers, no commentary, nothing else."
     )
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4000,
-        messages=[{"role": "user", "content": [_image_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
+        messages=[{"role": "user", "content": [_file_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
     )
     text = "".join(block.text for block in resp.content if hasattr(block, "text"))
     return text.strip()
 
 def _extract_by_position_from_image(client, uploaded_file, positions):
-    """Ask Claude to transcribe a position-grouped ranked list from a photo,
-    returning '### {Position}' section headers so the response can be split
-    back out into each position's own list."""
+    """Ask Claude to transcribe a position-grouped ranked list from a photo
+    or PDF, returning '### {Position}' section headers so the response can
+    be split back out into each position's own list."""
     pos_list = ", ".join(positions)
     prompt = (
-        "This image shows a person's own ranked list of NBA players, broken out by "
+        "This file shows a person's own ranked list of NBA players, broken out by "
         f"position (some combination of: {pos_list} -- possibly using common "
-        "abbreviations like C/PF/SF/SG/PG or synonyms). For each position group "
-        "actually present in the image, output a line reading exactly '### ' "
-        f"followed by one of these exact labels: {pos_list}. Then list that group's "
-        "players one per line, in the order shown (rank 1 = best, first in that "
-        "group). Fix obvious misspellings to the correct real player name where you "
-        "can tell who's meant. Skip any position not present in the image. Output "
-        "nothing else -- no extra commentary, no numbering within each group."
+        "abbreviations like C/PF/SF/SG/PG or synonyms). If it's a multi-page PDF, "
+        "read all pages in order. For each position group actually present, output "
+        "a line reading exactly '### ' followed by one of these exact labels: "
+        f"{pos_list}. Then list that group's players one per line, in the order "
+        "shown (rank 1 = best, first in that group). Fix obvious misspellings to "
+        "the correct real player name where you can tell who's meant. Skip any "
+        "position not present. Output nothing else -- no extra commentary, no "
+        "numbering within each group."
     )
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4000,
-        messages=[{"role": "user", "content": [_image_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
+        messages=[{"role": "user", "content": [_file_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
     )
     text = "".join(block.text for block in resp.content if hasattr(block, "text"))
 
@@ -909,16 +915,16 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
         groups = {}  # group_label -> ordered list of names
 
         if mode == "Overall (one list)":
-            with st.expander("📷 Or upload a photo / text file instead of typing"):
+            with st.expander("📷 Or upload a photo / PDF / text file instead of typing"):
                 up_img, up_file = st.columns(2)
                 with up_img:
-                    overall_image = st.file_uploader("Photo of your list", type=["png", "jpg", "jpeg"], key="rank_overall_img")
+                    overall_image = st.file_uploader("Photo or PDF of your list", type=["png", "jpg", "jpeg", "pdf"], key="rank_overall_img")
                 with up_file:
                     overall_file = st.file_uploader("Text/CSV file", type=["txt", "csv"], key="rank_overall_file")
                 if st.button("📥 Extract List", key="extract_overall_btn", disabled=(overall_image is None and overall_file is None)):
                     try:
                         if overall_image is not None:
-                            with st.spinner("Reading your photo..."):
+                            with st.spinner("Reading your file..."):
                                 extracted = _extract_overall_list_from_image(client, overall_image)
                         else:
                             extracted = overall_file.getvalue().decode("utf-8", errors="ignore")
@@ -938,15 +944,15 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
         else:
             st.caption("Leave any position blank if you don't want to rank it.")
 
-            with st.expander("📷 Or upload a photo of your position-grouped list instead of typing"):
-                st.caption("Works best if the photo has clear position labels (e.g. 'C:', 'Point Guards', etc.) above each group.")
-                position_image = st.file_uploader("Photo of your list", type=["png", "jpg", "jpeg"], key="rank_position_img")
+            with st.expander("📷 Or upload a photo / PDF of your position-grouped list instead of typing"):
+                st.caption("Works best if the file has clear position labels (e.g. 'C:', 'Point Guards', etc.) above each group.")
+                position_image = st.file_uploader("Photo or PDF of your list", type=["png", "jpg", "jpeg", "pdf"], key="rank_position_img")
                 if st.button("📥 Extract List", key="extract_position_btn", disabled=(position_image is None)):
                     try:
-                        with st.spinner("Reading your photo..."):
+                        with st.spinner("Reading your file..."):
                             sections = _extract_by_position_from_image(client, position_image, POSITIONS)
                         if not sections:
-                            st.warning("Couldn't identify any position groups in that photo — try typing manually instead.")
+                            st.warning("Couldn't identify any position groups in that file — try typing manually instead.")
                         else:
                             for pos, text in sections.items():
                                 st.session_state[f"rank_pos_{pos}"] = text
