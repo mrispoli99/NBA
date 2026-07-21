@@ -77,7 +77,7 @@ hof_master_list = load_hof_list()
 player_meta_df, player_meta_master_list = load_player_metadata()
 decade_rosters_df = load_decade_rosters()
 
-RANKING_CHUNK_SIZE = 40
+RANKING_CHUNK_SIZE = 25
 
 def _get_anthropic_client():
     if not ANTHROPIC_AVAILABLE:
@@ -87,24 +87,25 @@ def _get_anthropic_client():
         return None
     return anthropic.Anthropic(api_key=api_key)
 
-def _evaluate_ranking_chunk(client, model, group_label, full_names, start_idx, end_idx):
-    """Ask Claude to evaluate ranks [start_idx, end_idx] (1-indexed, inclusive)
-    of a person's own ranked player list, using the FULL list as context so
-    it can judge relative placement, but only generating output for the
-    requested sub-range to keep each response compact and reliable to parse."""
+def _evaluate_ranking_chunk(client, model, group_label, full_names, target_ranks):
+    """Ask Claude to evaluate a specific set of ranks (1-indexed, not
+    necessarily contiguous -- useful for retrying just the ones a prior call
+    silently dropped) from a person's own ranked player list, using the FULL
+    list as context so it can judge relative placement."""
     numbered_list = "\n".join(f"{i+1}. {n}" for i, n in enumerate(full_names))
-    batch_count = end_idx - start_idx + 1
+    batch_count = len(target_ranks)
     group_note = f" (this is specifically their '{group_label}' list)" if group_label != "Overall" else ""
+    ranks_str = ", ".join(str(r) for r in target_ranks)
 
     prompt = f"""A person made their own personal ranked list of NBA players{group_note} (rank 1 = they think this player is the best in THIS list). Here is their full list:
 
 {numbered_list}
 
-Evaluate ONLY ranks {start_idx}-{end_idx} from the list above. For each, judge whether that player's placement looks about right, too high, or too low RELATIVE TO THE OTHER PLAYERS IN THIS SAME LIST -- not some universal all-time ranking. Base it on real career accomplishments as best you know them: stats, awards, championships, longevity, peak impact, era context.
+Evaluate ONLY these ranks from the list above: {ranks_str}. For each, judge whether that player's placement looks about right, too high, or too low RELATIVE TO THE OTHER PLAYERS IN THIS SAME LIST -- not some universal all-time ranking. Base it on real career accomplishments as best you know them: stats, awards, championships, longevity, peak impact, era context.
 
 IMPORTANT -- accuracy over specificity: only state a precise number (exact championship count, exact award count, exact stat figure) if you are genuinely confident it's correct. If you're not sure of the exact number, describe it qualitatively instead (e.g. "won a title with Detroit" rather than guessing a specific ring count, "a defensive anchor" rather than an invented stat line). A vague-but-correct description is much better than a specific-but-wrong one.
 
-Respond with EXACTLY {batch_count} lines, one per player in ranks {start_idx}-{end_idx} in order, and NOTHING else -- no headers, no markdown, no blank lines, no commentary before or after. Each line must use this exact pipe-delimited format:
+CRITICAL -- you must respond with EXACTLY {batch_count} lines, one for EVERY SINGLE rank listed above ({ranks_str}), no exceptions and none skipped, even if a name looks unfamiliar (use UNRECOGNIZED in that case, but still include the line). Missing even one line is a failure. Output nothing else -- no headers, no markdown, no blank lines, no commentary before or after. Each line must use this exact pipe-delimited format:
 
 RANK|PLAYER_NAME|POSITION|YEARS_ACTIVE|BRIEF_NOTE|VERDICT|REASON
 
@@ -120,7 +121,7 @@ Where:
 
     resp = client.messages.create(
         model=model,
-        max_tokens=4000,
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}],
     )
     text = "".join(block.text for block in resp.content if hasattr(block, "text"))
@@ -143,6 +144,78 @@ Where:
             "Years_Active": years, "Note": note, "Verdict": verdict, "Reason": reason,
         })
     return rows
+
+def _recommend_missing_players(client, model, group_label, full_names, target_slots):
+    """Ask Claude to suggest real NBA players who are NOT in the submitted
+    list but arguably belong, each with an estimated rank on the same
+    numbering scale as the submitted list, so it reads as 'about where they'd
+    slot in' rather than a disconnected separate ranking."""
+    numbered_list = "\n".join(f"{i+1}. {n}" for i, n in enumerate(full_names))
+    group_note = f" for their '{group_label}' list" if group_label != "Overall" else ""
+    slots_str = ", ".join(str(s) for s in target_slots)
+
+    prompt = f"""A person made their own personal ranked list of NBA players{group_note} (rank 1 = best). Here is their full list:
+
+{numbered_list}
+
+They may have left some notable players off this list. Suggest {len(target_slots)} real NBA players who are NOT already anywhere in the list above but arguably deserve a spot on it, based on real career accomplishments (stats, awards, championships, longevity, peak impact, era context) -- players a knowledgeable fan would expect to see on a list like this. Do NOT suggest anyone whose name already appears in the list above, even under a slightly different spelling.
+
+For each suggestion, estimate where they'd slot in relative to the existing list, using the SAME rank numbering shown above (e.g. an estimated rank of 12 means "this player belongs at roughly the spot where #12 currently sits"). Order your suggestions strongest-first and label them with these placeholder slot numbers, in order: {slots_str}.
+
+IMPORTANT -- accuracy over specificity: only state a precise number (exact championship count, exact award count, exact stat figure) if you are genuinely confident it's correct. Prefer qualitative descriptions when unsure.
+
+Respond with EXACTLY {len(target_slots)} lines, one per suggestion, and NOTHING else -- no headers, no markdown, no blank lines, no commentary before or after. Each line must use this exact pipe-delimited format:
+
+SLOT|PLAYER_NAME|POSITION|YEARS_ACTIVE|BRIEF_NOTE|ESTIMATED_RANK|REASON
+
+Where:
+- SLOT is the placeholder number from {slots_str}, used in order.
+- PLAYER_NAME is their correct full name.
+- POSITION is their primary position.
+- YEARS_ACTIVE is their approximate career span like "2003-2016".
+- BRIEF_NOTE is a short note under 15 words about their role/career shape -- keep specific numbers to ones you're confident about.
+- ESTIMATED_RANK is an integer: roughly where they'd fit into this specific list (1 = would be the best on this list, matching the existing numbering scale).
+- REASON is one short sentence under 20 words explaining the suggested placement, ideally referencing a nearby existing player by name for context.
+"""
+
+    resp = client.messages.create(
+        model=model,
+        max_tokens=8000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+    rows = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) != 7:
+            continue
+        _slot, player, position, years, note, est_rank_str, reason = [p.strip() for p in parts]
+        try:
+            est_rank = int(est_rank_str)
+        except ValueError:
+            est_rank = None
+        rows.append({
+            "Player": player, "Position": position, "Years_Active": years,
+            "Note": note, "EstimatedRank": est_rank, "Reason": reason,
+        })
+    return rows
+
+def _drop_names_already_in_list(suggested_rows, existing_names, threshold=88):
+    """Safety net on top of the prompt instruction: fuzzy-check each
+    suggestion against the submitted list and drop any that are actually
+    just a spelling variant of someone already there."""
+    if not existing_names:
+        return suggested_rows
+    kept = []
+    for row in suggested_rows:
+        best_match, score = process.extractOne(row["Player"], existing_names)
+        if score < threshold:
+            kept.append(row)
+    return kept
 
 def _file_to_content_block(uploaded_file):
     import base64
@@ -305,6 +378,7 @@ if "active_game" not in st.session_state or st.session_state.active_game != acti
     st.session_state.rr_last_feedback = ""
     # Ranking Scrutinizer state variable
     st.session_state.rank_scrutinizer_results = None
+    st.session_state.rank_scrutinizer_recommendations = None
 
 
 # ==========================================
@@ -975,31 +1049,85 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
         total_entered = sum(len(v) for v in groups.values())
 
         if st.button("🔬 Analyze My Rankings", use_container_width=True, disabled=(total_entered == 0)):
+            model = "claude-sonnet-5"
             all_rows = []
-            total_chunks = sum(-(-len(names) // RANKING_CHUNK_SIZE) for names in groups.values())
+            all_recs = []
+            still_missing_report = {}
+
+            # Rough step count for the progress bar (evaluation chunks + one
+            # retry pass per group + recommendation chunks). Doesn't need to
+            # be exact, just a reasonable denominator.
+            eval_steps = sum(-(-len(names) // RANKING_CHUNK_SIZE) + 1 for names in groups.values())
+            rec_targets = {}
+            rec_steps = 0
+            for group_label, names in groups.items():
+                n_rec = 50 if mode == "Overall (one list)" else max(0, 100 - len(names))
+                rec_targets[group_label] = n_rec
+                rec_steps += -(-n_rec // RANKING_CHUNK_SIZE) if n_rec else 0
+            total_steps = max(1, eval_steps + rec_steps)
+
             progress = st.progress(0.0, text="Starting analysis...")
-            chunks_done = 0
-            error_occurred = False
+            step = 0
 
             for group_label, names in groups.items():
+                covered_ranks = set()
                 for start in range(0, len(names), RANKING_CHUNK_SIZE):
                     end = min(start + RANKING_CHUNK_SIZE, len(names))
-                    progress.progress(chunks_done / total_chunks, text=f"Evaluating {group_label}: ranks {start+1}-{end}...")
+                    target_ranks = list(range(start + 1, end + 1))
+                    progress.progress(min(1.0, step / total_steps), text=f"Evaluating {group_label}: ranks {start+1}-{end}...")
                     try:
-                        rows = _evaluate_ranking_chunk(client, "claude-sonnet-5", group_label, names, start + 1, end)
+                        rows = _evaluate_ranking_chunk(client, model, group_label, names, target_ranks)
                         for r in rows:
                             r["Group"] = group_label
                         all_rows.extend(rows)
+                        covered_ranks.update(r["UserRank"] for r in rows)
                     except Exception as e:
                         st.error(f"⚠️ API error evaluating {group_label} ranks {start+1}-{end}: {e}")
-                        error_occurred = True
-                    chunks_done += 1
-                    progress.progress(chunks_done / total_chunks, text=f"Evaluated {chunks_done}/{total_chunks} batches...")
+                    step += 1
+                    progress.progress(min(1.0, step / total_steps), text=f"Evaluated {step}/{total_steps} steps...")
+
+                # Retry pass: anything a chunk silently dropped gets one more shot.
+                missing = sorted(set(range(1, len(names) + 1)) - covered_ranks)
+                if missing:
+                    progress.progress(min(1.0, step / total_steps), text=f"Double-checking {len(missing)} missed player(s) in {group_label}...")
+                    try:
+                        retry_rows = _evaluate_ranking_chunk(client, model, group_label, names, missing)
+                        for r in retry_rows:
+                            r["Group"] = group_label
+                        all_rows.extend(retry_rows)
+                        covered_ranks.update(r["UserRank"] for r in retry_rows)
+                    except Exception as e:
+                        st.error(f"⚠️ API error retrying {group_label}: {e}")
+                    step += 1
+
+                still_missing = sorted(set(range(1, len(names) + 1)) - covered_ranks)
+                if still_missing:
+                    still_missing_report[group_label] = [names[i - 1] for i in still_missing]
+
+                # Recommendation pass: suggest players missing from the list.
+                n_rec = rec_targets.get(group_label, 0)
+                if n_rec > 0:
+                    for start in range(0, n_rec, RANKING_CHUNK_SIZE):
+                        end = min(start + RANKING_CHUNK_SIZE, n_rec)
+                        slots = list(range(start + 1, end + 1))
+                        progress.progress(min(1.0, step / total_steps), text=f"Finding players missing from {group_label}...")
+                        try:
+                            recs = _recommend_missing_players(client, model, group_label, names, slots)
+                            recs = _drop_names_already_in_list(recs, names)
+                            for r in recs:
+                                r["Group"] = group_label
+                            all_recs.extend(recs)
+                        except Exception as e:
+                            st.error(f"⚠️ API error finding missing players for {group_label}: {e}")
+                        step += 1
+                        progress.progress(min(1.0, step / total_steps), text=f"Evaluated {step}/{total_steps} steps...")
 
             progress.empty()
             st.session_state.rank_scrutinizer_results = pd.DataFrame(all_rows) if all_rows else None
-            if error_occurred:
-                st.warning("Some batches failed — results below may be incomplete. You can re-run to retry.")
+            st.session_state.rank_scrutinizer_recommendations = pd.DataFrame(all_recs) if all_recs else None
+            if still_missing_report:
+                for group_label, missing_names in still_missing_report.items():
+                    st.warning(f"⚠️ Couldn't get results for {len(missing_names)} player(s) in {group_label} even after a retry: {', '.join(missing_names)}")
 
         if st.session_state.get("rank_scrutinizer_results") is not None and not st.session_state.rank_scrutinizer_results.empty:
             res_df = st.session_state.rank_scrutinizer_results.copy()
@@ -1031,6 +1159,23 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
                         continue
                     st.write(f"#### {pos}")
                     st.dataframe(pos_df[display_cols].sort_values("UserRank"), use_container_width=True, hide_index=True)
+
+        if st.session_state.get("rank_scrutinizer_recommendations") is not None and not st.session_state.rank_scrutinizer_recommendations.empty:
+            rec_df = st.session_state.rank_scrutinizer_recommendations.copy()
+            st.write("---")
+            st.write("### 🆕 Players you might be missing")
+            st.caption("Suggested players not on your list, with a rough estimate of where they'd fit using the same rank numbers as your submitted list.")
+
+            rec_display_cols = ["EstimatedRank", "Player", "Position", "Years_Active", "Note", "Reason"]
+            if mode == "Overall (one list)":
+                st.dataframe(rec_df[rec_display_cols].sort_values("EstimatedRank"), use_container_width=True, hide_index=True)
+            else:
+                for pos in POSITIONS:
+                    pos_rec_df = rec_df[rec_df["Group"] == pos]
+                    if pos_rec_df.empty:
+                        continue
+                    st.write(f"#### {pos}")
+                    st.dataframe(pos_rec_df[rec_display_cols].sort_values("EstimatedRank"), use_container_width=True, hide_index=True)
 
 # ==========================================
 # BRANCH D: REGULAR TIMELINE LIST GAME MODES
