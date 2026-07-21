@@ -102,6 +102,8 @@ def _evaluate_ranking_chunk(client, model, group_label, full_names, start_idx, e
 
 Evaluate ONLY ranks {start_idx}-{end_idx} from the list above. For each, judge whether that player's placement looks about right, too high, or too low RELATIVE TO THE OTHER PLAYERS IN THIS SAME LIST -- not some universal all-time ranking. Base it on real career accomplishments as best you know them: stats, awards, championships, longevity, peak impact, era context.
 
+IMPORTANT -- accuracy over specificity: only state a precise number (exact championship count, exact award count, exact stat figure) if you are genuinely confident it's correct. If you're not sure of the exact number, describe it qualitatively instead (e.g. "won a title with Detroit" rather than guessing a specific ring count, "a defensive anchor" rather than an invented stat line). A vague-but-correct description is much better than a specific-but-wrong one.
+
 Respond with EXACTLY {batch_count} lines, one per player in ranks {start_idx}-{end_idx} in order, and NOTHING else -- no headers, no markdown, no blank lines, no commentary before or after. Each line must use this exact pipe-delimited format:
 
 RANK|PLAYER_NAME|POSITION|YEARS_ACTIVE|BRIEF_NOTE|VERDICT|REASON
@@ -111,7 +113,7 @@ Where:
 - PLAYER_NAME is their correctly spelled full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from this text.
 - POSITION is their primary position, or "N/A" if unrecognized.
 - YEARS_ACTIVE is their approximate career span like "2003-2016", or "N/A" if unrecognized.
-- BRIEF_NOTE is a short factual note under 15 words (e.g. career scoring average, key awards/role), or "N/A" if unrecognized.
+- BRIEF_NOTE is a short note under 15 words (e.g. role, general career shape, notable strength) -- keep specific numbers to ones you're confident about, or "N/A" if unrecognized.
 - VERDICT is exactly one of: ABOUT_RIGHT, TOO_HIGH, TOO_LOW, UNKNOWN (use UNKNOWN only if PLAYER_NAME is UNRECOGNIZED).
 - REASON is one short sentence under 20 words, or a brief note that the name wasn't recognized.
 """
@@ -164,7 +166,7 @@ def _extract_overall_list_from_image(client, uploaded_file):
         "no numbering, no headers, no commentary, nothing else."
     )
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-5",
         max_tokens=4000,
         messages=[{"role": "user", "content": [_file_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
     )
@@ -189,7 +191,7 @@ def _extract_by_position_from_image(client, uploaded_file, positions):
         "numbering within each group."
     )
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-5",
         max_tokens=4000,
         messages=[{"role": "user", "content": [_file_to_content_block(uploaded_file), {"type": "text", "text": prompt}]}],
     )
@@ -897,7 +899,7 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
     and Claude will evaluate whether each spot looks about right, too high, or too low
     compared to the rest of **your own list**. Rank overall or position-by-position, your call.
     """)
-    st.caption("Powered by the Anthropic API (Claude Haiku) using its own basketball knowledge — no local player database required, so any NBA player can be evaluated, not just ones in our scraped data.")
+    st.caption("Powered by the Anthropic API (Claude Sonnet) using its own basketball knowledge — no local player database required, so any NBA player can be evaluated, not just ones in our scraped data.")
 
     client = _get_anthropic_client()
     if not ANTHROPIC_AVAILABLE:
@@ -984,7 +986,7 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
                     end = min(start + RANKING_CHUNK_SIZE, len(names))
                     progress.progress(chunks_done / total_chunks, text=f"Evaluating {group_label}: ranks {start+1}-{end}...")
                     try:
-                        rows = _evaluate_ranking_chunk(client, "claude-haiku-4-5-20251001", group_label, names, start + 1, end)
+                        rows = _evaluate_ranking_chunk(client, "claude-sonnet-5", group_label, names, start + 1, end)
                         for r in rows:
                             r["Group"] = group_label
                         all_rows.extend(rows)
