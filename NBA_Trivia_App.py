@@ -238,7 +238,7 @@ def _compare_players(client, model, names):
 
 {players_str}
 
-Use web search to verify each player's CURRENT career stats and accolades before answering -- especially for active players, this season's awards/All-Star selections, and anyone whose career might still be ongoing. Don't rely purely on memory for anything recent; look it up.
+Use web search to verify each player's CURRENT career stats and accolades before answering -- especially for active players, this season's awards/All-Star selections, and anyone whose career might still be ongoing. This includes the ADVANCED stats (PER, Win Shares, Box Plus/Minus, True Shooting %), not just points/rebounds/assists and accolades -- these are less commonly memorized precisely, so actively look them up (e.g. via Basketball-Reference or similar) rather than skipping them or guessing. Don't rely purely on memory for anything recent; look it up.
 
 For each player, provide their correctly identified full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from the text, plus their career stat line: basic per-game stats (points, rebounds, assists, steals, blocks, FG%, 3P%, FT%), advanced stats (PER, Win Shares, Box Plus/Minus, True Shooting %), and a brief accolades summary (championships, MVP/DPOY/Finals MVP/ROY awards, All-Star and All-NBA selections, etc.) that reflects up-to-date, current information.
 
@@ -1326,7 +1326,13 @@ elif active_selection == "🆚 PLAYER SHOWDOWN":
                 PCT_LABELS = ["FG%", "3P%", "FT%", "True Shooting %"]
 
                 def _to_stat_value(code, raw_val):
+                    # Coerce every form of "missing" (None, "None", "N/A",
+                    # empty string, etc.) to a real float NaN so the column
+                    # ends up as proper float64 dtype -- if it stays 'object'
+                    # dtype, the styler's na_rep doesn't reliably catch it
+                    # and Python's None just prints as the literal text "None".
                     val = pd.to_numeric(raw_val, errors="coerce")
+                    val = float(val) if pd.notna(val) else float("nan")
                     label = dict(STAT_COLUMNS)[code]
                     # Defensive normalization: if a percentage came back as
                     # e.g. 50.7 instead of the requested 0.507, fix it up
@@ -1338,8 +1344,12 @@ elif active_selection == "🆚 PLAYER SHOWDOWN":
                 stat_df = pd.DataFrame(
                     {r["Player"]: [_to_stat_value(code, r.get(code)) for code, _ in STAT_COLUMNS] for r in recognized},
                     index=[label for _, label in STAT_COLUMNS],
-                )
+                ).astype(float)
                 other_labels = [label for label in stat_df.index if label not in PCT_LABELS]
+                # Explicit height so all 12 stat rows show at once instead of
+                # Streamlit's default fixed-height scrollable box hiding the
+                # top rows (PPG/RPG) out of view.
+                table_height = 35 * (len(stat_df) + 1) + 3
                 st.dataframe(
                     stat_df.style
                         .highlight_max(axis=1, color="#c9f2d8")
@@ -1347,6 +1357,7 @@ elif active_selection == "🆚 PLAYER SHOWDOWN":
                         .format("{:.3f}", subset=pd.IndexSlice[PCT_LABELS, :], na_rep="N/A")
                         .format("{:.1f}", subset=pd.IndexSlice[other_labels, :], na_rep="N/A"),
                     use_container_width=True,
+                    height=table_height,
                 )
                 st.caption("🟢 Best in row · 🔴 Worst in row")
 
