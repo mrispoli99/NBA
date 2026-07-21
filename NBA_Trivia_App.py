@@ -5,6 +5,11 @@ import time
 import random
 import re
 from thefuzz import process
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
 
 st.set_page_config(page_title="NBA Complete Trivia Arena", layout="centered")
 
@@ -72,61 +77,70 @@ hof_master_list = load_hof_list()
 player_meta_df, player_meta_master_list = load_player_metadata()
 decade_rosters_df = load_decade_rosters()
 
-def _parse_accolade_counts(accolades_text):
-    """Pull an All-Star count, championship count, and All-NBA Team count out
-    of the freeform Accolades string scraped from each player's bio (e.g. '5x
-    All-Star; 3x NBA Champion; 10x All-NBA; 2011 Most Valuable Player'). Falls
-    back to counting 1 if the badge is present without a leading number."""
-    text = str(accolades_text) if accolades_text else ""
-    allstar_match = re.search(r"(\d+)x?\s*(?:Time\s*)?All[\s-]?Star", text, re.IGNORECASE)
-    allstar_count = int(allstar_match.group(1)) if allstar_match else (1 if re.search(r"All[\s-]?Star", text, re.IGNORECASE) else 0)
-    champ_match = re.search(r"(\d+)x?\s*(?:NBA\s*)?Champion", text, re.IGNORECASE)
-    champ_count = int(champ_match.group(1)) if champ_match else (1 if re.search(r"Champion", text, re.IGNORECASE) else 0)
-    allnba_match = re.search(r"(\d+)x?\s*(?:Time\s*)?All[\s-]?NBA", text, re.IGNORECASE)
-    allnba_count = int(allnba_match.group(1)) if allnba_match else (1 if re.search(r"All[\s-]?NBA", text, re.IGNORECASE) else 0)
-    return allstar_count, champ_count, allnba_count
+RANKING_CHUNK_SIZE = 40
 
-@st.cache_data
-def compute_composite_scores(meta_df):
-    """A balanced heuristic 'how good was this player' score, min-max
-    normalized across the full curated player pool: ~35% career per-game
-    production (scoring/rebounding/assists/steals/blocks), ~15% career Win
-    Shares (an all-in-one value metric), ~50% awards/accolades. This isn't an
-    authoritative ranking -- it's just a consistent reference point the
-    Ranking Scrutinizer uses to flag placements that look out of step with a
-    player's peers."""
-    if meta_df.empty:
-        return meta_df.assign(CompositeScore=[])
-    d = meta_df.copy()
-    numeric_cols = ["PPG", "RPG", "APG", "MVP_Count", "DPOY_Count", "FMVP_Count", "ROY_Count"]
-    # SPG/BPG/WS only exist in CSVs generated after this update; default to 0
-    # (i.e. no contribution) if scraping this pool with an older CSV.
-    for col in ["SPG", "BPG", "WS"]:
-        if col not in d.columns:
-            d[col] = 0
-        numeric_cols.append(col)
-    for col in numeric_cols:
-        d[col] = pd.to_numeric(d[col], errors="coerce").fillna(0)
-    parsed = d["Accolades"].apply(_parse_accolade_counts)
-    d["AllStar_Count"] = parsed.apply(lambda t: t[0])
-    d["Champ_Count"] = parsed.apply(lambda t: t[1])
-    d["AllNBA_Count"] = parsed.apply(lambda t: t[2])
+def _get_anthropic_client():
+    if not ANTHROPIC_AVAILABLE:
+        return None
+    api_key = st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, "secrets") else None
+    if not api_key:
+        return None
+    return anthropic.Anthropic(api_key=api_key)
 
-    def norm(series):
-        rng = series.max() - series.min()
-        return (series - series.min()) / rng if rng > 0 else series * 0
+def _evaluate_ranking_chunk(client, model, group_label, full_names, start_idx, end_idx):
+    """Ask Claude to evaluate ranks [start_idx, end_idx] (1-indexed, inclusive)
+    of a person's own ranked player list, using the FULL list as context so
+    it can judge relative placement, but only generating output for the
+    requested sub-range to keep each response compact and reliable to parse."""
+    numbered_list = "\n".join(f"{i+1}. {n}" for i, n in enumerate(full_names))
+    batch_count = end_idx - start_idx + 1
+    group_note = f" (this is specifically their '{group_label}' list)" if group_label != "Overall" else ""
 
-    weights = {
-        "PPG": 0.15, "RPG": 0.08, "APG": 0.08, "SPG": 0.02, "BPG": 0.02,
-        "WS": 0.15,
-        "AllStar_Count": 0.10, "AllNBA_Count": 0.12, "MVP_Count": 0.12,
-        "FMVP_Count": 0.06, "Champ_Count": 0.04,
-        "DPOY_Count": 0.04, "ROY_Count": 0.02,
-    }
-    d["CompositeScore"] = sum(norm(d[col]) * w for col, w in weights.items())
-    return d
+    prompt = f"""A person made their own personal ranked list of NBA players{group_note} (rank 1 = they think this player is the best in THIS list). Here is their full list:
 
-player_scores_df = compute_composite_scores(player_meta_df)
+{numbered_list}
+
+Evaluate ONLY ranks {start_idx}-{end_idx} from the list above. For each, judge whether that player's placement looks about right, too high, or too low RELATIVE TO THE OTHER PLAYERS IN THIS SAME LIST -- not some universal all-time ranking. Base it on real career accomplishments as best you know them: stats, awards, championships, longevity, peak impact, era context.
+
+Respond with EXACTLY {batch_count} lines, one per player in ranks {start_idx}-{end_idx} in order, and NOTHING else -- no headers, no markdown, no blank lines, no commentary before or after. Each line must use this exact pipe-delimited format:
+
+RANK|PLAYER_NAME|POSITION|YEARS_ACTIVE|BRIEF_NOTE|VERDICT|REASON
+
+Where:
+- RANK is the number from the list above.
+- PLAYER_NAME is their correctly spelled full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from this text.
+- POSITION is their primary position, or "N/A" if unrecognized.
+- YEARS_ACTIVE is their approximate career span like "2003-2016", or "N/A" if unrecognized.
+- BRIEF_NOTE is a short factual note under 15 words (e.g. career scoring average, key awards/role), or "N/A" if unrecognized.
+- VERDICT is exactly one of: ABOUT_RIGHT, TOO_HIGH, TOO_LOW, UNKNOWN (use UNKNOWN only if PLAYER_NAME is UNRECOGNIZED).
+- REASON is one short sentence under 20 words, or a brief note that the name wasn't recognized.
+"""
+
+    resp = client.messages.create(
+        model=model,
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+    rows = []
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) != 7:
+            continue
+        rank_str, player, position, years, note, verdict, reason = [p.strip() for p in parts]
+        try:
+            rank = int(rank_str)
+        except ValueError:
+            continue
+        rows.append({
+            "UserRank": rank, "Player": player, "Position": position,
+            "Years_Active": years, "Note": note, "Verdict": verdict, "Reason": reason,
+        })
+    return rows
 
 if df is None or df.empty:
     st.error("⚠️ 'nba_trivia_data.csv' not found. Please run your scraper script first.")
@@ -812,15 +826,17 @@ elif active_selection == "🏛️ HOF NAMING SPRINT":
 elif active_selection == "🔬 RANKING SCRUTINIZER":
     st.markdown("""
     This isn't a timed game — paste in your own personal top-players list (up to 500 names)
-    and we'll pull each player's stats and flag any spots that look out of step with the rest
-    of **your own list**. Rank overall or position-by-position, your call.
+    and Claude will evaluate whether each spot looks about right, too high, or too low
+    compared to the rest of **your own list**. Rank overall or position-by-position, your call.
     """)
+    st.caption("Powered by the Anthropic API (Claude Haiku) using its own basketball knowledge — no local player database required, so any NBA player can be evaluated, not just ones in our scraped data.")
 
-    if player_scores_df.empty:
-        st.warning("⚠️ 'nba_player_metadata.csv' not found. Run the build_nba_data.py scraper (scrape_player_metadata step) to generate it, then reload the app.")
+    client = _get_anthropic_client()
+    if not ANTHROPIC_AVAILABLE:
+        st.warning("⚠️ The 'anthropic' package isn't installed. Add `anthropic` to requirements.txt and redeploy.")
+    elif client is None:
+        st.warning("⚠️ No Anthropic API key configured. Add ANTHROPIC_API_KEY to this app's Streamlit Cloud secrets, then reload.")
     else:
-        st.caption("Scoring blends career averages (PPG/RPG/APG) with awards & accolades (All-Star nods, MVPs, rings, etc.) roughly 50/50 — it's a heuristic reference point, not a verdict. Only players in our curated database (HOF inductees, award winners, and stat leaders) can be scored.")
-
         mode = st.radio("How do you want to rank?", options=["Overall (one list)", "By Position (5 lists)"], horizontal=True, key="rank_mode_select")
 
         POSITIONS = ["Center", "Power Forward", "Small Forward", "Shooting Guard", "Point Guard"]
@@ -828,7 +844,7 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
         def _parse_ranked_names(text):
             return [line.strip() for line in text.split("\n") if line.strip()]
 
-        entries = []  # (user_rank_within_group, typed_name, group_label)
+        groups = {}  # group_label -> ordered list of names
 
         if mode == "Overall (one list)":
             raw = st.text_area("Paste your ranked list, one player per line, best to worst (up to 500):", height=320, key="rank_overall_input")
@@ -836,80 +852,69 @@ elif active_selection == "🔬 RANKING SCRUTINIZER":
             if len(names) > 500:
                 st.warning(f"You entered {len(names)} names — only the first 500 will be analyzed.")
                 names = names[:500]
-            for i, name in enumerate(names, 1):
-                entries.append((i, name, "Overall"))
+            if names:
+                groups["Overall"] = names
         else:
             st.caption("Leave any position blank if you don't want to rank it.")
             for pos in POSITIONS:
                 raw = st.text_area(f"{pos} — ranked list (one per line, best to worst):", height=160, key=f"rank_pos_{pos}")
-                for i, name in enumerate(_parse_ranked_names(raw), 1):
-                    entries.append((i, name, pos))
-            if len(entries) > 500:
-                st.warning(f"You entered {len(entries)} names total across all positions — only the first 500 (in the order shown above) will be analyzed.")
-                entries = entries[:500]
+                names = _parse_ranked_names(raw)
+                if len(names) > 500:
+                    st.warning(f"'{pos}' has {len(names)} names — only the first 500 will be analyzed.")
+                    names = names[:500]
+                if names:
+                    groups[pos] = names
 
-        if st.button("🔬 Analyze My Rankings", use_container_width=True, disabled=(len(entries) == 0)):
-            results = []
-            for user_rank, typed_name, group in entries:
-                best_match, match_score = process.extractOne(typed_name, player_meta_master_list)
-                if match_score >= 85:
-                    row = player_scores_df[player_scores_df['Player'] == best_match].iloc[0]
-                    results.append({
-                        "UserRank": user_rank, "Group": group, "TypedName": typed_name,
-                        "Player": best_match, "MatchScore": match_score,
-                        "Position": row["Position"], "Years_Active": row["Years_Active"], "Teams": row["Teams"],
-                        "PPG": row["PPG"], "RPG": row["RPG"], "APG": row["APG"],
-                        "SPG": row.get("SPG", "N/A"), "BPG": row.get("BPG", "N/A"), "WS": row.get("WS", "N/A"),
-                        "Accolades": row["Accolades"],
-                        "CompositeScore": row["CompositeScore"], "Found": True,
-                    })
-                else:
-                    results.append({
-                        "UserRank": user_rank, "Group": group, "TypedName": typed_name,
-                        "Player": typed_name, "MatchScore": match_score,
-                        "Position": "N/A", "Years_Active": "N/A", "Teams": "N/A",
-                        "PPG": "N/A", "RPG": "N/A", "APG": "N/A",
-                        "SPG": "N/A", "BPG": "N/A", "WS": "N/A", "Accolades": "",
-                        "CompositeScore": None, "Found": False,
-                    })
-            st.session_state.rank_scrutinizer_results = pd.DataFrame(results)
+        total_entered = sum(len(v) for v in groups.values())
+
+        if st.button("🔬 Analyze My Rankings", use_container_width=True, disabled=(total_entered == 0)):
+            all_rows = []
+            total_chunks = sum(-(-len(names) // RANKING_CHUNK_SIZE) for names in groups.values())
+            progress = st.progress(0.0, text="Starting analysis...")
+            chunks_done = 0
+            error_occurred = False
+
+            for group_label, names in groups.items():
+                for start in range(0, len(names), RANKING_CHUNK_SIZE):
+                    end = min(start + RANKING_CHUNK_SIZE, len(names))
+                    progress.progress(chunks_done / total_chunks, text=f"Evaluating {group_label}: ranks {start+1}-{end}...")
+                    try:
+                        rows = _evaluate_ranking_chunk(client, "claude-haiku-4-5-20251001", group_label, names, start + 1, end)
+                        for r in rows:
+                            r["Group"] = group_label
+                        all_rows.extend(rows)
+                    except Exception as e:
+                        st.error(f"⚠️ API error evaluating {group_label} ranks {start+1}-{end}: {e}")
+                        error_occurred = True
+                    chunks_done += 1
+                    progress.progress(chunks_done / total_chunks, text=f"Evaluated {chunks_done}/{total_chunks} batches...")
+
+            progress.empty()
+            st.session_state.rank_scrutinizer_results = pd.DataFrame(all_rows) if all_rows else None
+            if error_occurred:
+                st.warning("Some batches failed — results below may be incomplete. You can re-run to retry.")
 
         if st.session_state.get("rank_scrutinizer_results") is not None and not st.session_state.rank_scrutinizer_results.empty:
             res_df = st.session_state.rank_scrutinizer_results.copy()
-            res_df["Feedback"] = "⚠️ Not found in database — no stats available"
-            res_df["CompositeRank"] = None
-
-            for grp, grp_df in res_df[res_df["Found"]].groupby("Group"):
-                grp_df = grp_df.sort_values("CompositeScore", ascending=False)
-                n = len(grp_df)
-                threshold = max(2, round(0.1 * n))
-                comp_ranks = pd.Series(range(1, n + 1), index=grp_df.index)
-                for idx in grp_df.index:
-                    comp_rank = comp_ranks[idx]
-                    diff = comp_rank - res_df.loc[idx, "UserRank"]
-                    if abs(diff) <= threshold:
-                        fb = "✅ About right"
-                    elif diff > 0:
-                        fb = f"⬇️ Ranked higher than the numbers support (data-based spot in your list: ~#{comp_rank})"
-                    else:
-                        fb = f"⬆️ Ranked lower than the numbers support (data-based spot in your list: ~#{comp_rank})"
-                    res_df.loc[idx, "Feedback"] = fb
-                    res_df.loc[idx, "CompositeRank"] = comp_rank
 
             st.write("---")
             total_n = len(res_df)
-            found_n = int(res_df["Found"].sum())
-            right_n = int((res_df["Feedback"] == "✅ About right").sum())
-            up_n = int(res_df["Feedback"].str.startswith("⬆️").sum())
-            down_n = int(res_df["Feedback"].str.startswith("⬇️").sum())
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("Total Entered", total_n)
-            m2.metric("Matched", found_n)
-            m3.metric("About Right", right_n)
-            m4.metric("Rank Higher?", up_n)
-            m5.metric("Rank Lower?", down_n)
+            right_n = int((res_df["Verdict"] == "ABOUT_RIGHT").sum())
+            up_n = int((res_df["Verdict"] == "TOO_LOW").sum())
+            down_n = int((res_df["Verdict"] == "TOO_HIGH").sum())
+            unk_n = int((res_df["Verdict"] == "UNKNOWN").sum())
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Evaluated", total_n)
+            m2.metric("About Right", right_n)
+            m3.metric("Rank Higher?", up_n)
+            m4.metric("Rank Lower?", down_n)
+            if unk_n:
+                st.caption(f"⚠️ {unk_n} name(s) weren't confidently recognized as NBA players — check spelling.")
 
-            display_cols = ["UserRank", "Player", "Position", "Years_Active", "Teams", "PPG", "RPG", "APG", "SPG", "BPG", "WS", "Accolades", "Feedback"]
+            verdict_icons = {"ABOUT_RIGHT": "✅ About right", "TOO_HIGH": "⬇️ Ranked too high", "TOO_LOW": "⬆️ Ranked too low", "UNKNOWN": "⚠️ Unrecognized"}
+            res_df["Feedback"] = res_df["Verdict"].map(verdict_icons).fillna(res_df["Verdict"])
+
+            display_cols = ["UserRank", "Player", "Position", "Years_Active", "Note", "Feedback", "Reason"]
             if mode == "Overall (one list)":
                 st.dataframe(res_df[display_cols].sort_values("UserRank"), use_container_width=True, hide_index=True)
             else:

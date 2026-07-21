@@ -1,8 +1,4 @@
-# Only needed to run build_nba_data.py locally to regenerate the CSVs.
-# Do NOT put this file at your repo root as requirements.txt -- Streamlit
-# Cloud would install all of this into the deployed app for no reason.
-# Use it with: pip install -r requirements-scrape.txt
 streamlit>=1.30,<2.0
 pandas>=2.0,<3.0
 thefuzz>=0.19
- 
+anthropic>=0.40
