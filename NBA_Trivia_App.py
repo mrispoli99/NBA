@@ -240,7 +240,7 @@ def _compare_players(client, model, names):
 
 Use web search to verify each player's CURRENT career stats and accolades before answering -- especially for active players, this season's awards/All-Star selections, and anyone whose career might still be ongoing. This includes the ADVANCED stats (PER, Win Shares, Box Plus/Minus, True Shooting %), not just points/rebounds/assists and accolades -- these are less commonly memorized precisely, so actively look them up (e.g. via Basketball-Reference or similar) rather than skipping them or guessing. Don't rely purely on memory for anything recent; look it up.
 
-For each player, provide their correctly identified full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from the text, plus their career stat line: basic per-game stats (points, rebounds, assists, steals, blocks, FG%, 3P%, FT%), advanced stats (PER, Win Shares, Box Plus/Minus, True Shooting %), and a brief accolades summary (championships, MVP/DPOY/Finals MVP/ROY awards, All-Star and All-NBA selections, etc.) that reflects up-to-date, current information.
+For each player, provide their correctly identified full name (fix typos/nicknames), or exactly "UNRECOGNIZED" if you can't confidently identify a real NBA player from the text, plus their career stat line: basic per-game stats (points, rebounds, assists, steals, blocks, FG%, 3P%, FT%), advanced stats (PER, Win Shares, Box Plus/Minus, True Shooting %), and a brief accolades summary (championships, MVP/DPOY/Finals MVP/ROY awards, All-Star selections, All-NBA selections, scoring titles, etc.) that reflects up-to-date, current information.
 
 Report FG%, 3P%, FT%, and True Shooting % as decimal fractions with three decimal places (e.g. 0.507), the standard basketball convention -- NOT as a percentage like 50.7.
 
@@ -248,7 +248,7 @@ IMPORTANT -- accuracy over specificity: only state a precise number if you're ge
 
 BE ESPECIALLY CAREFUL with confident negative claims about accolades (e.g. "no All-Star appearances," "never won an award") -- these are riskier than positive claims, especially for younger or currently-active players. Search to confirm before asserting a negative rather than assuming.
 
-Then rank the recognized players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context. Weight career Win Shares more heavily than the other individual stats when forming this judgment -- treat it as one of the strongest signals of overall career value -- but still use holistic judgment rather than ranking purely by Win Shares alone.
+Then rank the recognized players from best to worst overall, considering everything: stats, longevity, peak impact, awards, team success, era context. Weight accolades more heavily than raw stats when forming this judgment -- specifically All-Star appearances, All-NBA selections, and scoring titles are strong signals of how a player was actually regarded -- but still use holistic judgment rather than ranking purely by accolade counts alone.
 
 After you've finished any searching and analysis, respond with a FINAL answer in EXACTLY this format and nothing else in that final answer -- no extra commentary:
 
